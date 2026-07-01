@@ -3,6 +3,10 @@
 // 核心依赖全部在此声明，版本号统一由 gradle/libs.versions.toml 管理
 // ============================================================
 
+// Gradle KTS 规范：import 必须在 plugins{} 之前，plugins{} 必须在所有可执行代码之前
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -13,6 +17,13 @@ plugins {
     // KSP 代码生成（Room + Hilt 注解处理）
     alias(libs.plugins.ksp)
 }
+
+// ---- 读取签名配置（keystore.properties，不提交到 Git）----
+// 如果文件不存在（CI 环境或新开发者克隆后），自动回退到 Debug 签名，不影响构建
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProps: Properties? = if (keystorePropertiesFile.exists()) {
+    Properties().apply { load(FileInputStream(keystorePropertiesFile)) }
+} else null
 
 android {
     // 包名，也是 Play Store 的唯一标识，发布前可改为你自己的包名
@@ -35,6 +46,21 @@ android {
         }
     }
 
+    // ---- 签名配置（从 keystore.properties 读取，不硬编码密码）----
+    signingConfigs {
+        // 仅当 keystore.properties 文件存在时创建正式签名配置
+        // 如果文件不存在（CI 环境或新成员），就使用 Debug 签名构建，不会报错
+        if (keystoreProps != null) {
+            create("release") {
+                // 相对于项目根目录的 Keystore 文件路径
+                storeFile = rootProject.file(keystoreProps["storeFile"] as String)
+                storePassword = keystoreProps["storePassword"] as String
+                keyAlias = keystoreProps["keyAlias"] as String
+                keyPassword = keystoreProps["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         // Release 构建：开启代码混淆和资源压缩，减小 APK 体积
         release {
@@ -44,6 +70,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 签名：有 keystore.properties 用正式签名；否则回退 Debug 签名（不影响构建）
+            signingConfig = if (keystoreProps != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         // Debug 构建：关闭混淆，方便调试；添加 .debug 后缀，可与 Release 共存于同一设备
         debug {

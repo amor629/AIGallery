@@ -32,6 +32,8 @@ GoogleService-Info.plist
 local.properties
 # Gradle 本地配置覆盖
 gradle-local.properties
+# 签名密钥配置（包含明文密码，绝不提交）
+keystore.properties
 
 # ============================================================
 # 构建产物（可由源码重新生成，无需跟踪）
