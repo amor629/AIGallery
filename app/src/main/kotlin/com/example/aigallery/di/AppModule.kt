@@ -1,7 +1,9 @@
 package com.example.aigallery.di
 
+import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
+import com.example.aigallery.domain.repository.IMediaRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -34,6 +36,16 @@ abstract class AppModule {
     abstract fun bindAiConfigRepository(
         impl: AiConfigRepository
     ): IAiConfigRepository
+
+    /**
+     * 将接口 IMediaRepository 绑定到 MediaStoreRepository
+     * ViewModel 只依赖接口，未来切换为网络相册或 Room 缓存时上层无需修改
+     */
+    @Binds
+    @Singleton
+    abstract fun bindMediaRepository(
+        impl: MediaStoreRepository
+    ): IMediaRepository
 
     companion object {
 
