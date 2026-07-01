@@ -1,5 +1,7 @@
 package com.example.aigallery.domain.repository
 
+import android.content.IntentSender
+import android.net.Uri
 import com.example.aigallery.domain.model.Album
 import com.example.aigallery.domain.model.MediaItem
 import kotlinx.coroutines.flow.Flow
@@ -39,4 +41,17 @@ interface IMediaRepository {
      * @param bucketId 相册 ID（来自 Album.id）
      */
     fun getMediaByAlbum(bucketId: Long): Flow<List<MediaItem>>
+
+    /**
+     * 请求删除一批媒体文件
+     *
+     * Android 10+（API 29+）要求通过系统确认弹窗才能删除其他应用创建的媒体。
+     * 此方法返回一个 [IntentSender]，调用方通过
+     * `ActivityResultContracts.StartIntentSenderForResult` 启动系统确认框。
+     * 用户点击"允许"后，文件才真正被删除，MediaStore 随即触发响应式刷新。
+     *
+     * @param uris 要删除的媒体 URI 列表（content://media/...）
+     * @return 系统删除确认框的 IntentSender，或 null（理论上不会为 null）
+     */
+    suspend fun buildDeleteRequest(uris: List<Uri>): IntentSender?
 }

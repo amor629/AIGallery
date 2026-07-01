@@ -1,5 +1,7 @@
 package com.example.aigallery.ui.gallery
 
+import android.content.IntentSender
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.Pager
@@ -13,13 +15,17 @@ import com.example.aigallery.domain.repository.IMediaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 // ============================================================
@@ -180,6 +186,107 @@ class GalleryViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = emptyList()
         )
+
+    // ----------------------------------------------------------------
+    // 多选模式状态
+    // ----------------------------------------------------------------
+
+    /**
+     * 当前是否处于多选模式（长按后进入）
+     * true → 底部操作栏可见，缩略图显示选中覆盖层
+     */
+    private val _isSelecting = MutableStateFlow(false)
+    val isSelecting: StateFlow<Boolean> = _isSelecting.asStateFlow()
+
+    /**
+     * 当前已选中的媒体 URI 集合（用 Uri 作 key 避免歧义）
+     * 空集合 = 未选任何文件（但仍可能处于多选模式）
+     */
+    private val _selectedUris = MutableStateFlow<Set<Uri>>(emptySet())
+    val selectedUris: StateFlow<Set<Uri>> = _selectedUris.asStateFlow()
+
+    /**
+     * 一次性事件：当需要启动系统删除确认弹窗时，此 Flow 发射 IntentSender
+     *
+     * UI 收集到非 null 值后：
+     * 1. 启动 IntentSender（系统弹窗）
+     * 2. 调用 [clearDeleteRequest] 将此 Flow 清回 null（防止屏幕旋转重复触发）
+     */
+    private val _deleteRequest = MutableStateFlow<IntentSender?>(null)
+    val deleteRequest: StateFlow<IntentSender?> = _deleteRequest.asStateFlow()
+
+    // ----------------------------------------------------------------
+    // 多选模式操作
+    // ----------------------------------------------------------------
+
+    /**
+     * 长按某个媒体 → 进入多选模式，同时将该项置为已选中
+     *
+     * @param uri 被长按的媒体 URI
+     */
+    fun enterSelectionMode(uri: Uri) {
+        _isSelecting.value = true
+        _selectedUris.update { it + uri }
+    }
+
+    /**
+     * 单击已选中的项 → 取消选中；单击未选中的项 → 选中
+     * 仅在多选模式下有效（普通模式下单击由 GalleryScreen 直接导航）
+     */
+    fun toggleSelection(uri: Uri) {
+        _selectedUris.update { current ->
+            if (uri in current) current - uri else current + uri
+        }
+    }
+
+    /**
+     * 退出多选模式，清空所有选中项
+     * 调用时机：按下返回键、点击取消按钮
+     */
+    fun clearSelection() {
+        _isSelecting.value = false
+        _selectedUris.value = emptySet()
+    }
+
+    /**
+     * 全选 / 取消全选
+     * 若当前选中数 < 总数 → 全选；否则 → 取消全选
+     */
+    fun toggleSelectAll() {
+        val allMedia = timelineMedia.value
+            .filterIsInstance<TimelineItem.Media>()
+            .map { it.media.uri }
+            .toSet()
+        _selectedUris.update { current ->
+            if (current.size < allMedia.size) allMedia else emptySet()
+        }
+    }
+
+    /**
+     * 请求删除当前所有选中的媒体
+     *
+     * 流程：
+     * 1. 收集选中的 URI 列表
+     * 2. 调用 Repository 构建系统删除 IntentSender（Android 14 必须经用户授权）
+     * 3. 将 IntentSender 推送给 UI，UI 启动系统弹窗
+     * 4. 用户确认后系统执行删除，MediaStore Flow 自动刷新列表
+     *
+     * 注意：此函数只发起请求，不等待用户确认结果。
+     *       GalleryScreen 在收到系统回调后调用 [clearSelection] 退出多选模式。
+     */
+    fun requestDeleteSelected() {
+        val uris = _selectedUris.value.toList()
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val intentSender = mediaRepository.buildDeleteRequest(uris)
+            _deleteRequest.value = intentSender
+        }
+    }
+
+    /** 系统删除弹窗已启动后，清除请求（防止屏幕旋转重复触发） */
+    fun clearDeleteRequest() {
+        _deleteRequest.value = null
+    }
 
     // ----------------------------------------------------------------
     // 按月分组辅助方法（供 GalleryScreen Step 3 使用）

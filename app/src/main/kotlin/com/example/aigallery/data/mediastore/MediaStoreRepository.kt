@@ -2,8 +2,11 @@ package com.example.aigallery.data.mediastore
 
 import android.content.ContentUris
 import android.content.Context
+import android.content.IntentSender
 import android.database.ContentObserver
+import android.net.Uri
 import android.provider.MediaStore
+import android.os.Build
 import com.example.aigallery.domain.model.Album
 import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
@@ -291,5 +294,29 @@ class MediaStoreRepository @Inject constructor(
         }
 
         return results
+    }
+
+    // ----------------------------------------------------------------
+    // 删除请求
+    // ----------------------------------------------------------------
+
+    /**
+     * 构建 Android 系统删除确认请求
+     *
+     * Android 10+ 不允许 App 直接删除其他应用创建的媒体文件。
+     * 必须调用 [MediaStore.createDeleteRequest]，弹出系统授权弹窗，
+     * 用户点击"允许"后系统才执行实际删除，MediaStore 随即触发响应式刷新。
+     *
+     * minSdk=34（Android 14），无需 Build.VERSION 版本判断，直接调用。
+     *
+     * @param uris 要删除的媒体 URI 列表
+     * @return 系统弹窗 IntentSender（传给 ActivityResultLauncher 启动）
+     */
+    override suspend fun buildDeleteRequest(uris: List<Uri>): IntentSender? {
+        if (uris.isEmpty()) return null
+        return MediaStore.createDeleteRequest(
+            context.contentResolver,
+            uris
+        ).intentSender
     }
 }
