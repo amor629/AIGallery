@@ -86,6 +86,7 @@ import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -494,9 +495,16 @@ private fun PhotoPageContent(
     /** 下滑退出偏移量（由手势更新，动画结束后归零） */
     var dismissOffsetY by remember { mutableFloatStateOf(0f) }
 
+    /**
+     * 缩放还原动画 Job 引用（使用 Array 持有，避免触发不必要的重组）
+     * 快速连续点击返回时，先取消上一次动画再启动新的，防止多动画并行导致 scale 跳变
+     */
+    val zoomResetJob = remember { arrayOfNulls<Job>(1) }
+
     // 当前页且已放大时：返回键缩回到 1x，而不是直接退出详情页
     BackHandler(enabled = isCurrentPage && scale > 1f) {
-        coroutineScope.launch {
+        zoomResetJob[0]?.cancel()          // 取消上次还在进行中的缩放动画
+        zoomResetJob[0] = coroutineScope.launch {
             animate(
                 initialValue  = scale,
                 targetValue   = 1f,
@@ -514,8 +522,9 @@ private fun PhotoPageContent(
         if (mediaItem.mediaType == MediaType.VIDEO) {
             // ---- 视频：ExoPlayer 自动播放 ----
             VideoPlayer(
-                uri      = mediaItem.uri,
-                modifier = Modifier.fillMaxSize().then(sharedModifier)
+                uri           = mediaItem.uri,
+                isCurrentPage = isCurrentPage,
+                modifier      = Modifier.fillMaxSize().then(sharedModifier)
             )
         } else {
             // ---- 图片：支持缩放 / 平移 / 下滑退出 ----
@@ -715,17 +724,28 @@ private fun PhotoPageContent(
  */
 @Composable
 private fun VideoPlayer(
-    uri     : Uri,
-    modifier: Modifier = Modifier
+    uri          : Uri,
+    isCurrentPage: Boolean,     // 是否是当前可见页（false 时静音/暂停）
+    modifier     : Modifier = Modifier
 ) {
     val context = LocalContext.current
 
+    // 以 uri 为 key：URI 变化时重建播放器实例（翻页到新视频时自动触发）
     val player = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(Media3MediaItem.fromUri(uri))
             prepare()
             playWhenReady = true
         }
+    }
+
+    /**
+     * 当页面不是当前可见页时暂停播放，切回时继续。
+     * 解决 beyondViewportPageCount 预渲染导致相邻视频已经开始出声的问题。
+     * 使用 LaunchedEffect 在主线程安全地操作 ExoPlayer。
+     */
+    LaunchedEffect(isCurrentPage) {
+        player.playWhenReady = isCurrentPage
     }
 
     DisposableEffect(player) {
