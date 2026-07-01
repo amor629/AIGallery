@@ -1,9 +1,11 @@
 package com.example.aigallery.ui.gallery
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.SelectAll
@@ -49,18 +52,22 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,10 +80,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
@@ -97,6 +108,66 @@ private val MEDIA_PERMISSIONS = arrayOf(
     // Android 14+：用户可选择部分授权，授权此权限后 MediaStore 返回用户选中的媒体
     Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
 )
+
+// ============================================================
+// 权限状态密封类
+// ============================================================
+
+/**
+ * 媒体权限的三种状态，决定显示什么 UI
+ *
+ * - Granted：已授权，正常展示相册
+ * - Denied：已拒绝，但 Android 仍允许再次弹窗请求
+ * - PermanentlyDenied：用户勾选了"不再询问"，Android 不会再弹系统权限框，
+ *     必须引导用户手动进入系统设置开启
+ */
+private sealed interface PermissionStatus {
+    data object Granted           : PermissionStatus
+    data object Denied            : PermissionStatus   // 可再次请求
+    data object PermanentlyDenied : PermissionStatus   // 必须去系统设置
+}
+
+/**
+ * 计算当前媒体权限状态
+ *
+ * 判断逻辑（Android 官方推荐）：
+ * 1. 检查 READ_MEDIA_IMAGES 或 READ_MEDIA_VISUAL_USER_SELECTED 是否已授权
+ * 2. 若均未授权：
+ *    - shouldShowRequestPermissionRationale == true  → 用户曾拒绝过，还可再次请求
+ *    - shouldShowRequestPermissionRationale == false → 要么从未请求，要么永久拒绝
+ *      区分这两者需结合 [hasEverAskedPermission] 标志：
+ *      - 从未请求过：返回 Denied（触发首次请求）
+ *      - 已请求过但 rationale=false：返回 PermanentlyDenied（去系统设置）
+ *
+ * @param context              应用 Context（用于 checkSelfPermission）
+ * @param activity             当前 Activity（用于 shouldShowRequestPermissionRationale）
+ * @param hasEverAskedPermission 是否曾经发起过权限请求（由调用方跟踪）
+ */
+private fun resolvePermissionStatus(
+    context: android.content.Context,
+    activity: Activity?,
+    hasEverAskedPermission: Boolean
+): PermissionStatus {
+    // 图片权限 或 部分授权（二选一即可）
+    val granted =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) ==
+                PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) ==
+                PackageManager.PERMISSION_GRANTED
+
+    if (granted) return PermissionStatus.Granted
+
+    // 权限未授权：判断是否还可以弹请求框
+    val canShowRationale = activity?.shouldShowRequestPermissionRationale(
+        Manifest.permission.READ_MEDIA_IMAGES
+    ) == true
+
+    return when {
+        canShowRationale    -> PermissionStatus.Denied             // 曾拒绝，仍可再次请求
+        hasEverAskedPermission -> PermissionStatus.PermanentlyDenied // 请求过 + rationale=false = 永久拒绝
+        else                -> PermissionStatus.Denied             // 从未请求，触发首次请求
+    }
+}
 
 // ============================================================
 // 主页入口
@@ -131,27 +202,50 @@ fun GalleryScreen(
     // ---- 是否显示"确认删除"对话框（在系统弹窗之前的 App 内确认）----
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
-    // ---- 权限状态（检查图片或部分授权，两者满足其一即可）----
-    var hasPermission by remember {
+    // ---- 权限相关状态 ----
+
+    // 当前 Activity（用于 shouldShowRequestPermissionRationale）
+    val activity = context as? Activity
+
+    // 是否曾经发起过权限请求（用于区分"从未请求"和"永久拒绝"）
+    var hasEverAskedPermission by remember { mutableStateOf(false) }
+
+    // 计算当前权限状态（初始值）
+    var permissionStatus by remember {
         mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context, Manifest.permission.READ_MEDIA_IMAGES
-            ) == PackageManager.PERMISSION_GRANTED
-            ||
-            ContextCompat.checkSelfPermission(
-                context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
-            ) == PackageManager.PERMISSION_GRANTED
+            resolvePermissionStatus(context, activity, hasEverAskedPermission)
         )
     }
 
     // ---- 权限请求 Launcher ----
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        hasPermission = results[Manifest.permission.READ_MEDIA_IMAGES] == true
-                || results[Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED] == true
+    ) { _ ->
+        // 请求完成（无论结果），标记"已请求过"，重新计算状态
+        hasEverAskedPermission = true
+        permissionStatus = resolvePermissionStatus(context, activity, hasEverAskedPermission)
     }
 
+    // ---- 监听 Lifecycle.ON_RESUME：用户从系统设置返回时重新检查权限 ----
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                // App 重新获得焦点（可能从系统设置返回），刷新权限状态
+                permissionStatus = resolvePermissionStatus(context, activity, hasEverAskedPermission)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // ---- 首次进入：若无权限且从未请求过，自动弹出系统权限框 ----
+    LaunchedEffect(Unit) {
+        if (permissionStatus == PermissionStatus.Denied && !hasEverAskedPermission) {
+            hasEverAskedPermission = true
+            permissionLauncher.launch(MEDIA_PERMISSIONS)
+        }
+    }
     // ---- 系统删除确认弹窗 Launcher（Android 10+ 必须）----
     val deleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -167,13 +261,6 @@ fun GalleryScreen(
             deleteLauncher.launch(
                 IntentSenderRequest.Builder(sender).build()
             )
-        }
-    }
-
-    // ---- 首次进入：若无权限则自动弹出请求 ----
-    LaunchedEffect(Unit) {
-        if (!hasPermission) {
-            permissionLauncher.launch(MEDIA_PERMISSIONS)
         }
     }
 
@@ -331,13 +418,25 @@ fun GalleryScreen(
         }
     ) { paddingValues ->
 
-        // ---- 权限未授权：显示权限说明页 ----
-        if (!hasPermission) {
+        // ---- 权限未授权：显示权限说明页（区分"可再次请求"和"已永久拒绝"）----
+        if (permissionStatus != PermissionStatus.Granted) {
             PermissionRequiredContent(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues),
-                onRequestPermission = { permissionLauncher.launch(MEDIA_PERMISSIONS) }
+                isPermanentlyDenied = permissionStatus == PermissionStatus.PermanentlyDenied,
+                onRequestPermission = {
+                    hasEverAskedPermission = true
+                    permissionLauncher.launch(MEDIA_PERMISSIONS)
+                },
+                onOpenSettings = {
+                    // 永久拒绝时：跳转到 App 系统设置页（用户手动开权限）
+                    val settingsIntent = Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null)
+                    )
+                    context.startActivity(settingsIntent)
+                }
             )
             return@Scaffold
         }
@@ -374,7 +473,18 @@ fun GalleryScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues),
-                    onRequestPermission = { permissionLauncher.launch(MEDIA_PERMISSIONS) }
+                    isPermanentlyDenied = permissionStatus == PermissionStatus.PermanentlyDenied,
+                    onRequestPermission = {
+                        hasEverAskedPermission = true
+                        permissionLauncher.launch(MEDIA_PERMISSIONS)
+                    },
+                    onOpenSettings = {
+                        val settingsIntent = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null)
+                        )
+                        context.startActivity(settingsIntent)
+                    }
                 )
             }
 
@@ -651,9 +761,23 @@ private fun EmptyContent(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * 权限未授权说明页
+ *
+ * 两种场景：
+ * - [isPermanentlyDenied] = false：首次请求或可再次请求 → 显示"授权访问相册"按钮
+ * - [isPermanentlyDenied] = true ：用户勾选"不再询问" → 显示"前往系统设置"按钮，
+ *                                  并用卡片说明如何手动开启权限
+ *
+ * @param isPermanentlyDenied 权限是否已被永久拒绝
+ * @param onRequestPermission 发起系统权限请求的回调
+ * @param onOpenSettings      跳转到系统应用设置页的回调
+ */
 @Composable
 private fun PermissionRequiredContent(
+    isPermanentlyDenied: Boolean = false,
     onRequestPermission: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -668,21 +792,73 @@ private fun PermissionRequiredContent(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(24.dp))
+
         Text(
-            text = "需要访问相册权限",
+            text = if (isPermanentlyDenied) "相册权限已被禁止" else "需要访问相册权限",
             style = MaterialTheme.typography.titleMedium
         )
         Spacer(Modifier.height(8.dp))
+
         Text(
-            text = "AI Gallery 需要读取您的图片和视频\n才能展示本地相册内容",
+            text = if (isPermanentlyDenied)
+                "您已拒绝授权，请前往系统设置手动开启\n以便 AI Gallery 展示本地相册"
+            else
+                "AI Gallery 需要读取您的图片和视频\n才能展示本地相册内容",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center, // 居中对齐
+            textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 32.dp)
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onRequestPermission) {
-            Text("授权访问相册")
+
+        if (isPermanentlyDenied) {
+            // ---- 永久拒绝：引导去系统设置 ----
+
+            // 操作步骤说明卡片
+            Card(
+                modifier = Modifier
+                    .padding(horizontal = 32.dp)
+                    .fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "如何手动开启权限",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "1. 点击下方「前往系统设置」\n" +
+                               "2. 进入「权限」→「照片和视频」\n" +
+                               "3. 选择「允许访问所有照片」\n" +
+                               "4. 返回 AI Gallery 即可使用",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+
+            // 主操作按钮：跳转系统设置
+            Button(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = Icons.Default.LockOpen,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.size(8.dp))
+                Text("前往系统设置")
+            }
+        } else {
+            // ---- 首次请求或可再次请求 ----
+            Button(onClick = onRequestPermission) {
+                Text("授权访问相册")
+            }
         }
     }
 }
