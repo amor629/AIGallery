@@ -42,6 +42,16 @@
             </intent-filter>
         </activity>
 
+        <!--
+            崩溃友好提示页
+            - exported="false"：不对外暴露，只能由 GlobalCrashHandler 内部启动
+            - 故意不使用 @AndroidEntryPoint，崩溃时 Hilt 依赖图可能已损坏
+        -->
+        <activity
+            android:name=".crash.CrashActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AIGallery" />
+
     </application>
 
 </manifest>
