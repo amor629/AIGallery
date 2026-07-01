@@ -5,9 +5,11 @@ import com.example.aigallery.data.ai.AiChatService
 import com.example.aigallery.data.ai.AiImageRepositoryImpl
 import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
+import com.example.aigallery.data.preferences.ThemePreferencesRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
 import com.example.aigallery.domain.repository.IAiImageRepository
 import com.example.aigallery.domain.repository.IMediaRepository
+import com.example.aigallery.domain.repository.IThemeRepository
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import dagger.Binds
@@ -64,6 +66,16 @@ abstract class AppModule {
     abstract fun bindAiImageRepository(
         impl: AiImageRepositoryImpl
     ): IAiImageRepository
+
+    /**
+     * 将接口 IThemeRepository 绑定到 ThemePreferencesRepository
+     * 主题切换用：SettingsViewModel 读写，MainActivity 订阅 Flow
+     */
+    @Binds
+    @Singleton
+    abstract fun bindThemeRepository(
+        impl: ThemePreferencesRepository
+    ): IThemeRepository
 
     companion object {
 

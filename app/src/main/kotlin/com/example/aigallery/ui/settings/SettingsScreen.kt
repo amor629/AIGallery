@@ -10,12 +10,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -30,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -44,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -51,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aigallery.ai.AiState
+import com.example.aigallery.domain.model.AppTheme
 
 /**
  * 设置页主入口（Composable）
@@ -110,6 +118,12 @@ fun SettingsScreen(
             if (uiState.aiState is AiState.NotConfigured) {
                 DashScopeQuickStartCard()
             }
+
+            // ---- 主题切换卡 ----
+            ThemeCard(
+                currentTheme = uiState.currentTheme,
+                onThemeSelected = viewModel::setTheme
+            )
 
             // ---- AI 配置表单 ----
             AiConfigForm(
@@ -378,6 +392,93 @@ private fun DashScopeQuickStartCard() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
+        }
+    }
+}
+
+// ============================================================
+// 主题切换卡片
+// ============================================================
+
+/**
+ * 主题选择卡片
+ *
+ * 提供三个选项（跟随系统 / 亮色 / 暗色），使用单选按钮（RadioButton）。
+ * 选中项立即写入 DataStore，MainActivity 订阅到新值后自动重组 UI。
+ *
+ * @param currentTheme   当前生效的主题（从 ViewModel 读取）
+ * @param onThemeSelected 用户选中新主题时的回调
+ */
+@Composable
+private fun ThemeCard(
+    currentTheme: AppTheme,
+    onThemeSelected: (AppTheme) -> Unit
+) {
+    // 主题选项列表：(枚举值, 显示文字, 图标)
+    val options = listOf(
+        Triple(AppTheme.SYSTEM, "跟随系统", Icons.Default.PhoneAndroid),
+        Triple(AppTheme.LIGHT,  "亮色模式", Icons.Default.LightMode),
+        Triple(AppTheme.DARK,   "暗色模式", Icons.Default.DarkMode)
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // 章节标题
+            Text(
+                text = "外观主题",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 单选按钮组（selectableGroup 确保无障碍语义正确）
+            Column(modifier = Modifier.selectableGroup()) {
+                options.forEach { (theme, label, icon) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // selectable 使整行可点击，并提供无障碍 role
+                            .selectable(
+                                selected = currentTheme == theme,
+                                onClick  = { onThemeSelected(theme) },
+                                role     = Role.RadioButton
+                            )
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // 单选圆圈
+                        RadioButton(
+                            selected = currentTheme == theme,
+                            onClick  = null  // 已由外层 Row 的 selectable 处理点击
+                        )
+                        // 主题图标
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = if (currentTheme == theme)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // 主题名称
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (currentTheme == theme)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
     }
 }

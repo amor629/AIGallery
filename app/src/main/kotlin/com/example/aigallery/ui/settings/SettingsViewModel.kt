@@ -5,7 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.ai.AiStateManager
 import com.example.aigallery.domain.model.AiConfig
+import com.example.aigallery.domain.model.AppTheme
 import com.example.aigallery.domain.repository.IAiConfigRepository
+import com.example.aigallery.domain.repository.IThemeRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -24,6 +26,7 @@ import javax.inject.Inject
  * 设置页 UI 状态（单一数据流，ViewModel 通过 StateFlow 暴露）
  *
  * @param aiState        当前 AI 全局状态（驱动状态指示器的显示）
+ * @param currentTheme   当前应用主题（驱动主题切换开关的选中状态）
  * @param baseUrlInput   用户正在输入的 Base URL
  * @param apiKeyInput    用户正在输入的 API Key
  * @param isSaving       是否正在保存（显示加载指示器）
@@ -32,6 +35,7 @@ import javax.inject.Inject
  */
 data class SettingsUiState(
     val aiState: AiState = AiState.NotConfigured,
+    val currentTheme: AppTheme = AppTheme.SYSTEM,
     val baseUrlInput: String = "",
     val apiKeyInput: String = "",
     val isSaving: Boolean = false,
@@ -57,7 +61,8 @@ data class SettingsUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val repository: IAiConfigRepository,
-    private val aiStateManager: AiStateManager
+    private val aiStateManager: AiStateManager,
+    private val themeRepository: IThemeRepository
 ) : ViewModel() {
 
     // ---- 内部可变状态（仅 ViewModel 内部修改）----
@@ -68,12 +73,13 @@ class SettingsViewModel @Inject constructor(
         )
     )
 
-    // ---- 对外暴露的 UI 状态：合并输入状态 + AI 全局状态 ----
+    // ---- 对外暴露的 UI 状态：合并输入状态 + AI 全局状态 + 主题 ----
     val uiState: StateFlow<SettingsUiState> = combine(
         _inputState,
-        aiStateManager.state
-    ) { inputState, aiState ->
-        inputState.copy(aiState = aiState)
+        aiStateManager.state,
+        themeRepository.themeFlow
+    ) { inputState, aiState, theme ->
+        inputState.copy(aiState = aiState, currentTheme = theme)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -190,5 +196,22 @@ class SettingsViewModel @Inject constructor(
     // ----------------------------------------------------------------
     fun onSnackbarShown() {
         _inputState.update { it.copy(snackbarMessage = null) }
+    }
+
+    // ----------------------------------------------------------------
+    // 切换主题
+    // ----------------------------------------------------------------
+
+    /**
+     * 将用户选择的主题持久化到 DataStore
+     *
+     * 调用方：设置页的主题选择器（因此在 SettingsViewModel 里）
+     * 保存完成后 themeRepository.themeFlow 会自动推送新少、
+     * MainActivity 订阅的 Flow 也会收到新少，UI 自动重组。
+     */
+    fun setTheme(theme: AppTheme) {
+        viewModelScope.launch {
+            themeRepository.saveTheme(theme)
+        }
     }
 }

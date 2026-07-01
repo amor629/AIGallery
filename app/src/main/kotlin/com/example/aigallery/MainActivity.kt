@@ -4,15 +4,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.example.aigallery.domain.model.AppTheme
+import com.example.aigallery.ui.MainViewModel
 import com.example.aigallery.ui.detail.PhotoDetailScreen
 import com.example.aigallery.ui.gallery.GalleryScreen
 import com.example.aigallery.ui.settings.SettingsScreen
@@ -27,7 +35,7 @@ import java.nio.charset.StandardCharsets
 /**
  * 应用主 Activity
  *
- * 职责：持有 NavController，管理全局路由
+ * 职责：持有 NavController，管理全局路由；通过 [MainViewModel] 订阅主题并应用。
  *
  * 路由表：
  *   "gallery"  → GalleryScreen（应用启动页）
@@ -36,13 +44,32 @@ import java.nio.charset.StandardCharsets
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    /**
+     * 通过 Hilt-ViewModel 桥接获取主题偏好
+     * viewModels() 由 activity-ktx 提供，Hilt 注入 MainViewModel 的构造参数
+     */
+    private val mainViewModel: MainViewModel by viewModels()
+
     @OptIn(ExperimentalSharedTransitionApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
-            MaterialTheme {
+            // 订阅主题 Flow
+            val appTheme by mainViewModel.appTheme.collectAsStateWithLifecycle()
+
+            // 根据用户选择决定是否启用暗色主题
+            val useDarkTheme = when (appTheme) {
+                AppTheme.LIGHT  -> false                  // 强制亮色
+                AppTheme.DARK   -> true                   // 强制暗色
+                AppTheme.SYSTEM -> isSystemInDarkTheme()  // 跟随系统
+            }
+
+            // Material3 内置配色方案（可后续扩展为 Dynamic Color）
+            MaterialTheme(
+                colorScheme = if (useDarkTheme) darkColorScheme() else lightColorScheme()
+            ) {
                 val navController = rememberNavController()
 
                 SharedTransitionLayout {
