@@ -138,6 +138,10 @@ dependencies {
     // 用于 AiConfigRepository：保护用户自填的 AI API Key，绝不明文落盘
     implementation(libs.security.crypto)
 
+    // ========== 启动页 SplashScreen ==========
+    // 消除冷启动白屏；在 API 31+ 上使用系统原生 SplashScreen，低版本自动模拟
+    implementation(libs.androidx.core.splashscreen)
+
     // ========== 依赖注入 Hilt ==========
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)                // 注解处理器（编译时生成注入代码）

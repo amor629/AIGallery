@@ -44,6 +44,10 @@ datastore        = "1.1.1"
 # ---- 加密存储（用于保护用户自填的 AI API Key）----
 securityCrypto   = "1.1.0-alpha06"
 
+# ---- 启动页（SplashScreen，防止冷启动白屏）----
+# 1.0.1 是当前稳定版，支持 API 12+，在 API 31+ 上使用系统原生 SplashScreen API
+splashscreen     = "1.0.1"
+
 # ---- 依赖注入（Hilt）----
 hilt             = "2.52"
 hiltNavCompose   = "1.2.0"
@@ -112,6 +116,10 @@ datastore-preferences = { group = "androidx.datastore", name = "datastore-prefer
 
 # ========== 加密存储（保护 AI API Key，绝不明文落盘）==========
 security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+
+# ========== 启动页 SplashScreen ==========
+# 提供统一的启动页体验（API 12~30 模拟效果，API 31+ 使用系统原生实现）
+androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
 
 # ========== 依赖注入 Hilt ==========
 hilt-android            = { group = "com.google.dagger", name = "hilt-android",           version.ref = "hilt" }

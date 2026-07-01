@@ -1,15 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-        应用 Activity 主题
-        使用 Android 内置的无 ActionBar 主题作为 XML 基础
-        Compose 的 MaterialTheme 会接管所有 UI 样式，此处仅控制窗口属性
+        应用主 Activity 主题（Compose UI 运行期间使用此主题）
+        Compose 的 MaterialTheme 会接管所有 UI 样式，此处仅控制窗口级属性
     -->
     <style name="Theme.AIGallery" parent="android:Theme.Material.Light.NoActionBar">
-        <!-- 窗口背景设为透明，配合 Compose 的 Surface 颜色使用 -->
-        <item name="android:windowBackground">@android:color/white</item>
-        <!-- 状态栏和导航栏颜色由 enableEdgeToEdge() 控制 -->
+        <!-- 窗口背景：透明，配合 Compose Surface 使用，防止内容渲染前短暂闪白 -->
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- 状态栏和导航栏由 enableEdgeToEdge() 动态控制，此处设为透明 -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!--
+        启动页主题（MainActivity 的 android:theme 指向此处）
+
+        工作原理（core-splashscreen 库）：
+          1. App 冷启动 → 系统展示此主题定义的 Splash 画面
+          2. MainActivity.installSplashScreen() 接管画面控制权
+          3. 第一帧渲染完成后 → 自动切换到 postSplashScreenTheme 指定的主题
+          4. Compose UI 正常接管，无任何白/黑屏闪烁
+
+        各属性说明：
+          windowSplashScreenBackground       : Splash 背景色（品牌蓝）
+          windowSplashScreenAnimatedIcon     : Splash 中心图标（相机前景层）
+          windowSplashScreenIconBackgroundColor: 图标背景色（与 Splash 背景一致，无内圆圈感）
+          postSplashScreenTheme              : Splash 结束后切回的真实主题
+    -->
+    <style name="Theme.AIGallery.Starting" parent="Theme.SplashScreen">
+        <!-- Splash 画面背景：品牌蓝 -->
+        <item name="windowSplashScreenBackground">#1565C0</item>
+        <!-- Splash 图标：复用自适应图标前景层（白色相机 + AI 星） -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <!-- 图标圆形背景色：与 Splash 背景同色，视觉上图标直接浮于蓝色背景 -->
+        <item name="windowSplashScreenIconBackgroundColor">#1565C0</item>
+        <!-- Splash 结束后切换到正式主题 -->
+        <item name="postSplashScreenTheme">@style/Theme.AIGallery</item>
     </style>
 </resources>

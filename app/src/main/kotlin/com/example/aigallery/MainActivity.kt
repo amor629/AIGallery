@@ -27,6 +27,7 @@ import com.example.aigallery.ui.settings.SettingsScreen
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import dagger.hilt.android.AndroidEntryPoint
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -52,6 +53,10 @@ class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalSharedTransitionApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        // ⚠️ installSplashScreen() 必须在 super.onCreate() 之前调用，
+        //    否则系统 SplashScreen 控制权无法被接管，仍会出现白屏/黑屏。
+        //    此调用不会阻塞 UI，第一帧渲染完毕后 Splash 自动消失。
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
