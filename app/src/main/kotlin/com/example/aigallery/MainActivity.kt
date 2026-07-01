@@ -19,10 +19,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.remember
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.aigallery.domain.model.AppTheme
 import com.example.aigallery.ui.MainViewModel
 import com.example.aigallery.ui.detail.PhotoDetailScreen
 import com.example.aigallery.ui.gallery.GalleryScreen
+import com.example.aigallery.ui.gallery.GalleryViewModel
 import com.example.aigallery.ui.settings.SettingsScreen
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
@@ -117,26 +120,26 @@ class MainActivity : ComponentActivity() {
                         )
                     ) { backStackEntry ->
                         val animScope = this
-                        val rawUri  = backStackEntry.arguments?.getString("uri")  ?: ""
-                        val rawName = backStackEntry.arguments?.getString("name") ?: ""
-                        val uri  = android.net.Uri.parse(
-                            URLDecoder.decode(rawUri,  StandardCharsets.UTF_8.name())
+                        val rawUri = backStackEntry.arguments?.getString("uri") ?: ""
+                        val uri = android.net.Uri.parse(
+                            URLDecoder.decode(rawUri, StandardCharsets.UTF_8.name())
                         )
-                        val name = URLDecoder.decode(rawName, StandardCharsets.UTF_8.name())
-                        // 解析媒体类型字符串（未识别的值回退到 IMAGE）
-                        val mediaType = try {
-                            MediaType.valueOf(
-                                backStackEntry.arguments?.getString("type") ?: "IMAGE"
-                            )
-                        } catch (_: IllegalArgumentException) { MediaType.IMAGE }
+
+                        // 复用 gallery 路由已存在的 GalleryViewModel，共享完整媒体列表。
+                        // getBackStackEntry("gallery") 在此处始终成功（detail 只能从 gallery 打开）。
+                        val galleryEntry = remember(navController) {
+                            navController.getBackStackEntry("gallery")
+                        }
+                        val galleryViewModel: GalleryViewModel = hiltViewModel(galleryEntry)
+                        val allMedia by galleryViewModel.allMedia.collectAsStateWithLifecycle()
+
                         CompositionLocalProvider(
                             LocalSharedTransitionScope   provides this@SharedTransitionLayout,
                             LocalAnimatedVisibilityScope provides animScope
                         ) {
                             PhotoDetailScreen(
-                                uri = uri,
-                                fileName = name,
-                                mediaType = mediaType,
+                                allMedia       = allMedia,
+                                initialUri     = uri,
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }

@@ -212,6 +212,22 @@ class GalleryViewModel @Inject constructor(
         )
 
     // ----------------------------------------------------------------
+    // 详情页 HorizontalPager 使用的完整媒体列表（公开）
+    // ----------------------------------------------------------------
+
+    /**
+     * 完整媒体列表（不含分组标题），供 PhotoDetailScreen 的 HorizontalPager 翻页使用。
+     * 与 [timelineMedia] 共享同一 [allMediaFlow] 上游，不增加额外的 MediaStore 查询。
+     * 详情页通过 navController.getBackStackEntry("gallery") 拿到本 ViewModel 实例后订阅此 Flow。
+     */
+    val allMedia: StateFlow<List<MediaItem>> = allMediaFlow
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList()
+        )
+
+    // ----------------------------------------------------------------
     // 多选模式状态
     // ----------------------------------------------------------------
 

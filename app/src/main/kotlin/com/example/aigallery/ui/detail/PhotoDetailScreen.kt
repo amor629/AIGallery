@@ -1,4 +1,4 @@
-package com.example.aigallery.ui.detail
+﻿package com.example.aigallery.ui.detail
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -18,8 +18,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +32,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -53,9 +53,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +82,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.domain.model.AiAnalysisResult
+import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
@@ -87,124 +90,132 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
- * 图片详情页（沉浸式全屏浏览）
+ * 图片/视频详情页（沉浸式全屏 + HorizontalPager 左右滑动切换）
  *
- * 支持的手势：
- * ┌──────────────────────────────────────────────────────┐
- * │ 双指捏合      → 缩放（1x ～ 5x）                     │
- * │ 放大后单指拖  → 平移图片（限制在边界内）              │
- * │ 双击          → 放大到 2.5x / 还原到 1x              │
- * │ 单击          → 切换顶部栏显示 / 隐藏                 │
- * │ 正常比例下下滑 → 下滑返回（拖动 > 180px 触发退出）    │
- * │ 下滑不够 180px → 弹性回弹到原位                      │
- * └──────────────────────────────────────────────────────┘
+ * 每张图片支持的手势：
+ * ┌──────────────────────────────────────────────────────────┐
+ * │ scale=1 横向滑  → HorizontalPager 切换上/下一张         │
+ * │ 双指捏合        → 缩放（1x ～ 5x）                      │
+ * │ 放大后单指拖    → 平移图片（限制在边界内）               │
+ * │ 双击            → 放大到 2.5x / 还原到 1x              │
+ * │ 单击            → 切换顶部栏显示 / 隐藏                 │
+ * │ scale=1 纵向下滑 → 下滑返回（> 180px 触发退出）         │
+ * └──────────────────────────────────────────────────────────┘
  *
- * @param uri            媒体内容 URI（content://media/...）
- * @param fileName       文件名，显示在顶部栏
- * @param mediaType      IMAGE（手势查看）或 VIDEO（自动播放）
+ * @param allMedia       完整媒体列表（来自 GalleryViewModel，供 Pager 翻页使用）
+ * @param initialUri     进入时点击的图片 URI（用于定位初始页）
  * @param onNavigateBack 退出详情页的回调
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun PhotoDetailScreen(
-    uri: Uri,
-    fileName: String,
-    mediaType: MediaType = MediaType.IMAGE,
+    allMedia      : List<MediaItem>,
+    initialUri    : Uri,
     onNavigateBack: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-
-    // 读取 CompositionLocal 中的共享元素 Scope（由 MainActivity 的 NavHost 提供）
-    val sharedScope = LocalSharedTransitionScope.current
-    val visScope    = LocalAnimatedVisibilityScope.current
-    // 共享元素修饰符（图片和视频均复用）：与相册缩略图构成飞入/飞出过渡动画
-    val sharedModifier: Modifier = if (sharedScope != null && visScope != null) {
-        with(sharedScope) {
-            Modifier.sharedElement(
-                state = rememberSharedContentState("media_$uri"),
-                animatedVisibilityScope = visScope
+    // allMedia 尚未加载完毕时（极少发生），显示加载中状态
+    if (allMedia.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .statusBarsPadding()
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color    = Color.White
             )
         }
-    } else Modifier
+        return
+    }
 
     // ================================================================
-    // AI 识图状态（Hilt ViewModel，生命周期与导航内局一致）
+    // 共享元素过渡 Scope（由 MainActivity NavHost 通过 CompositionLocal 提供）
     // ================================================================
+    val sharedScope = LocalSharedTransitionScope.current
+    val visScope    = LocalAnimatedVisibilityScope.current
 
-    /** AI 识图 ViewModel：负责调用 Repository 并持有分析结果 */
-    val aiViewModel: AiDetailViewModel = hiltViewModel()
-
-    /** AI 全局配置状态：NotConfigured / Configured */
-    val aiState by aiViewModel.aiState.collectAsStateWithLifecycle()
-
-    /** 当前分析结果：Idle / Loading / Success / Error */
+    // ================================================================
+    // AI 识图状态（整个详情页共用一个 ViewModel，切换页面时重置结果）
+    // ================================================================
+    val aiViewModel    : AiDetailViewModel = hiltViewModel()
+    val aiState        by aiViewModel.aiState.collectAsStateWithLifecycle()
     val analysisResult by aiViewModel.analysisResult.collectAsStateWithLifecycle()
 
-    /** 控制“请先配置 AI”引导对话框的显示 */
+    /** 控制"AI 未配置"引导对话框的可见性 */
     var showAiConfigDialog by remember { mutableStateOf(false) }
 
-    /** 当前缩放比例（1f = 原始大小，最大 5x） */
-    var scale by remember { mutableFloatStateOf(1f) }
+    /** 顶部栏（返回 + 文件名）可见性，单击图片切换 */
+    var showBars by remember { mutableStateOf(true) }
 
-    /** 图片在 X 轴的平移量（像素，仅在 scale > 1 时有效） */
-    var offsetX by remember { mutableFloatStateOf(0f) }
-
-    /** 图片在 Y 轴的平移量（像素，仅在 scale > 1 时有效） */
-    var offsetY by remember { mutableFloatStateOf(0f) }
-
-    /** 下滑退出的偏移量（像素，正值 = 向下） */
-    var dismissOffsetY by remember { mutableFloatStateOf(0f) }
+    // ================================================================
+    // HorizontalPager 状态
+    // ================================================================
 
     /**
-     * 背景透明度：随下滑距离线性降低
-     * 下滑 500px 时完全透明，营造"图片消失"的视觉效果
+     * 初始页索引：找 initialUri 在列表中的位置，找不到则退到 0。
+     * 用 remember 固定，避免 allMedia 后续刷新导致 Pager 跳页。
      */
+    val initialIndex = remember(allMedia, initialUri) {
+        allMedia.indexOfFirst { it.uri == initialUri }.coerceAtLeast(0)
+    }
+
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex,
+        pageCount   = { allMedia.size }
+    )
+
+    /**
+     * 每页的缩放比缓存（key=页面索引, value=缩放比）
+     * 用于 HorizontalPager.userScrollEnabled：
+     * 当前页 scale > 1 时禁止翻页，防止缩放平移误触翻页。
+     */
+    val pageScales = remember { mutableStateMapOf<Int, Float>() }
+    val currentPageScale = pageScales[pagerState.currentPage] ?: 1f
+
+    /**
+     * 当前页的下滑退出偏移（PhotoPageContent 通过回调上报）
+     * 用于外层 Box 背景透明度计算，营造"图片消失"效果。
+     */
+    var dismissOffsetY by remember { mutableFloatStateOf(0f) }
+
+    /** 背景随下滑距离线性变透明（下滑 500px = 完全透明） */
     val backgroundAlpha by remember {
         derivedStateOf { (1f - abs(dismissOffsetY) / 500f).coerceIn(0f, 1f) }
     }
 
-    /** 顶部栏可见性（单击切换） */
-    var showBars by remember { mutableStateOf(true) }
-
-    // ================================================================
-    // 返回键处理
-    // 已放大时：先弹性缩回，不立即退出（与系统相册行为一致）
-    // 正常比例时：直接退出
-    // ================================================================
-    BackHandler {
-        if (scale > 1f) {
-            coroutineScope.launch {
-                animate(scale, 1f, animationSpec = spring()) { v, _ -> scale = v }
-                offsetX = 0f
-                offsetY = 0f
-            }
-        } else {
-            onNavigateBack()
-        }
+    // 翻页时重置 AI 分析结果 & 下滑偏移量（防止上一张状态残留）
+    LaunchedEffect(pagerState.currentPage) {
+        aiViewModel.clearResult()
+        dismissOffsetY = 0f
     }
+
+    /** 当前可见页的媒体项（顶部栏标题、AI 按钮类型判断等使用） */
+    val currentMedia = allMedia.getOrNull(pagerState.currentPage)
 
     // ================================================================
     // AI 未配置引导对话框
-    // 用户点击“AI 识图”时若尚未配置，显示此对话框引导用户去设置页
     // ================================================================
     if (showAiConfigDialog) {
         AlertDialog(
             onDismissRequest = { showAiConfigDialog = false },
             title = { Text("AI 功能未配置") },
-            text = {
+            text  = {
                 Text(
-                    "请点击左上角返回按鈕，" +
-                    "前往应用内“设置”页填写 API 地址和 Key，" +
+                    "请点击左上角返回按钮，" +
+                    "前往应用内【设置】页填写 API 地址和 Key，" +
                     "配置完成后重新打开照片即可使用 AI 识图。"
                 )
             },
             confirmButton = {
-                TextButton(onClick = { showAiConfigDialog = false }) {
-                    Text("知道了")
-                }
+                TextButton(onClick = { showAiConfigDialog = false }) { Text("知道了") }
             }
         )
     }
+
+    // ================================================================
+    // 主容器：黑色背景（随下滑淡出）+ Pager + 顶部/底部 UI 叠层
+    // ================================================================
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -213,221 +224,108 @@ fun PhotoDetailScreen(
     ) {
 
         // ============================================================
-        // 内容区：根据媒体类型切换图片查看器 / 视频播放器
+        // HorizontalPager：左右滑动切换照片/视频
+        //   userScrollEnabled：当前页放大中（scale>1）时禁止翻页
+        //   beyondViewportPageCount=1：预渲染前后各 1 张，滑动丝滑
         // ============================================================
-        if (mediaType == MediaType.VIDEO) {
-            // ---- 视频播放器（Media3 ExoPlayer，进入自动播放）----
-            VideoPlayer(
-                uri      = uri,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(sharedModifier)  // 共享元素过渡
+        HorizontalPager(
+            state                  = pagerState,
+            userScrollEnabled      = currentPageScale <= 1.01f,
+            beyondViewportPageCount = 1,
+            modifier              = Modifier.fillMaxSize()
+        ) { pageIndex ->
+            val mediaItem = allMedia.getOrNull(pageIndex) ?: return@HorizontalPager
+
+            // 共享元素过渡：仅初始页（用户点击的那张）生效，其余页直接显示
+            val pageSharedModifier: Modifier =
+                if (pageIndex == initialIndex && sharedScope != null && visScope != null) {
+                    with(sharedScope) {
+                        Modifier.sharedElement(
+                            state                   = rememberSharedContentState("media_${mediaItem.uri}"),
+                            animatedVisibilityScope = visScope
+                        )
+                    }
+                } else Modifier
+
+            PhotoPageContent(
+                mediaItem              = mediaItem,
+                isCurrentPage          = (pageIndex == pagerState.currentPage),
+                sharedModifier         = pageSharedModifier,
+                onScaleChanged         = { s -> pageScales[pageIndex] = s },
+                onDismissOffsetChanged = { d -> dismissOffsetY = d },
+                onNavigateBack         = onNavigateBack,
+                onToggleBars           = { showBars = !showBars }
             )
-        } else {
-        // ---- 图片查看器（支持缩放、平移、下滑返回）----
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(uri)
-                .build(),
-            contentDescription = fileName,
-            contentScale = ContentScale.Fit,       // Fit = 保持比例完整显示
-            modifier = Modifier
-                .fillMaxSize()
-                .then(sharedModifier)  // 共享元素过渡（从缩略图飞入详情页）
-                // graphicsLayer 在 GPU 层做变换，不触发重新布局，确保流畅
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offsetX,
-                    translationY = offsetY + dismissOffsetY  // 平移 + 退出偏移叠加
-                )
-
-                // --------------------------------------------------
-                // 手势层 ①：缩放 + 平移 + 下滑触发
-                // detectTransformGestures 同时处理：
-                //   - 双指捏合/张开 → zoom 不为 1f
-                //   - 单指或双指拖动 → pan 有偏移
-                // --------------------------------------------------
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val newScale = (scale * zoom).coerceIn(1f, 5f)
-                        scale = newScale
-
-                        if (newScale > 1.01f) {
-                            // ---- 已放大模式：平移图片，限制在边界内 ----
-                            // 边界 = 图片超出屏幕的一半
-                            val boundX = (size.width  * (newScale - 1f)) / 2f
-                            val boundY = (size.height * (newScale - 1f)) / 2f
-                            offsetX = (offsetX + pan.x).coerceIn(-boundX, boundX)
-                            offsetY = (offsetY + pan.y).coerceIn(-boundY, boundY)
-                        } else {
-                            // ---- 正常比例模式：纵向拖动累加到退出偏移 ----
-                            scale = 1f        // 防止浮点误差导致 scale 卡在 1.001f
-                            offsetX = 0f
-                            offsetY = 0f
-                            dismissOffsetY += pan.y
-                        }
-                    }
-                }
-
-                // --------------------------------------------------
-                // 手势层 ②：手势结束检测（退出 or 弹回）
-                // 独立的 pointerInput，使用 requireUnconsumed = false
-                // 确保即使 ① 消费了 DOWN 事件，此处仍能监听到 UP 事件
-                // --------------------------------------------------
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
-                        waitForUpOrCancellation()   // 等待所有手指抬起
-
-                        // 手势结束时判断是否触发退出
-                        if (abs(dismissOffsetY) > 0.5f) {
-                            if (abs(dismissOffsetY) > 180f) {
-                                // 拖动超过 180px → 退出
-                                onNavigateBack()
-                            } else {
-                                // 拖动不足 → 弹性回弹到原位
-                                val startY = dismissOffsetY
-                                coroutineScope.launch {
-                                    animate(
-                                        initialValue = startY,
-                                        targetValue = 0f,
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                                            stiffness = Spring.StiffnessMedium
-                                        )
-                                    ) { v, _ -> dismissOffsetY = v }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // --------------------------------------------------
-                // 手势层 ③：单击 + 双击
-                // detectTapGestures 与 detectTransformGestures 可共存：
-                //   - 拖动/捏合时不会触发 onTap/onDoubleTap
-                //   - 短暂点击时两者都响应，但 ① 的 pan/zoom=0 无副作用
-                // --------------------------------------------------
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        // 单击：切换顶部栏
-                        onTap = { showBars = !showBars },
-
-                        // 双击：放大到 2.5x 或缩回 1x（带弹簧动画）
-                        onDoubleTap = {
-                            coroutineScope.launch {
-                                if (scale > 1f) {
-                                    // 已放大 → 还原
-                                    animate(
-                                        initialValue = scale,
-                                        targetValue = 1f,
-                                        animationSpec = spring(stiffness = Spring.StiffnessMedium)
-                                    ) { v, _ -> scale = v }
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                } else {
-                                    // 正常大小 → 放大 2.5x
-                                    animate(
-                                        initialValue = 1f,
-                                        targetValue = 2.5f,
-                                        animationSpec = spring(stiffness = Spring.StiffnessMedium)
-                                    ) { v, _ -> scale = v }
-                                }
-                            }
-                        }
-                    )
-                }
-        )
-        } // end else（图片查看器）
+        }
 
         // ============================================================
-        // AI 结果面板（从底部滑入，Success 或 Error 时显示）
-        // IMAGE 和 VIDEO 均不显示（VIDEO 不支持 AI 识图）
+        // AI 分析结果面板（底部滑入，Success / Error 时显示）
         // ============================================================
         AnimatedVisibility(
-            visible = analysisResult is AiAnalysisResult.Success
-                   || analysisResult is AiAnalysisResult.Error,
-            enter = fadeIn(tween(200)) + slideInVertically { it },
-            exit  = fadeOut(tween(200)) + slideOutVertically { it },
+            visible  = analysisResult is AiAnalysisResult.Success
+                    || analysisResult is AiAnalysisResult.Error,
+            enter    = fadeIn(tween(200)) + slideInVertically { it },
+            exit     = fadeOut(tween(200)) + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            // 深色半透明卡片，确保文字在任意图片背景上可读
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 300.dp)
                     .padding(horizontal = 12.dp)
                     .navigationBarsPadding()
-                    .padding(bottom = 72.dp),  // 留出底部 AI 按钮的空间
+                    .padding(bottom = 72.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = Color.Black.copy(alpha = 0.88f),
                     contentColor   = Color.White
                 )
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    // 标题行：AI 图标 + 标题 + 关闭/重试按钮
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier              = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment     = Alignment.CenterVertically
                     ) {
-                        // 左侧：金色 ✨ 图标 + "AI 识图" 标题
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalAlignment     = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AutoAwesome,
+                                imageVector        = Icons.Default.AutoAwesome,
                                 contentDescription = null,
-                                tint = Color(0xFFFFD700),
-                                modifier = Modifier.size(18.dp)
+                                tint               = Color(0xFFFFD700),
+                                modifier           = Modifier.size(18.dp)
                             )
-                            Text(
-                                text = "AI 识图",
-                                style = MaterialTheme.typography.titleSmall
-                            )
+                            Text("AI 识图", style = MaterialTheme.typography.titleSmall)
                         }
-                        // 右侧：错误时显示重试按钮，始终显示关闭按钮
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (analysisResult is AiAnalysisResult.Error) {
                                 TextButton(
-                                    onClick = { aiViewModel.analyzeImage(uri) }
+                                    onClick = {
+                                        currentMedia?.let { aiViewModel.analyzeImage(it.uri) }
+                                    }
                                 ) {
-                                    Text(
-                                        text = "重试",
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
+                                    Text("重试", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                             IconButton(
-                                onClick = aiViewModel::clearResult,
+                                onClick  = aiViewModel::clearResult,
                                 modifier = Modifier.size(32.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "关闭",
-                                    tint = Color.White
-                                )
+                                Icon(Icons.Default.Close, contentDescription = "关闭", tint = Color.White)
                             }
                         }
                     }
 
                     Spacer(Modifier.height(8.dp))
 
-                    // 内容区（可滚动，防止长文本超出卡片边界）
-                    Column(
-                        modifier = Modifier.verticalScroll(rememberScrollState())
-                    ) {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         when (val r = analysisResult) {
                             is AiAnalysisResult.Success ->
-                                Text(
-                                    text = r.description,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
+                                Text(r.description, style = MaterialTheme.typography.bodyMedium)
                             is AiAnalysisResult.Error ->
                                 Text(
-                                    text = r.message,
+                                    r.message,
                                     color = Color(0xFFFF6B6B),
                                     style = MaterialTheme.typography.bodyMedium
                                 )
@@ -437,18 +335,20 @@ fun PhotoDetailScreen(
                 }
             }
         }
+
+        // ============================================================
+        // 顶部栏（返回按钮 + 文件名）
         // 单击图片时淡入/淡出 + 从顶部滑入/滑出
         // ============================================================
         AnimatedVisibility(
-            visible = showBars,
-            enter = fadeIn(tween(150)) + slideInVertically { -it },
-            exit  = fadeOut(tween(150)) + slideOutVertically { -it },
+            visible  = showBars,
+            enter    = fadeIn(tween(150)) + slideInVertically { -it },
+            exit     = fadeOut(tween(150)) + slideOutVertically { -it },
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    // 渐变蒙层：保证白色图标在任意背景下可见
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
@@ -460,36 +360,34 @@ fun PhotoDetailScreen(
                     .padding(horizontal = 4.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 返回按钮
                 IconButton(onClick = onNavigateBack) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        imageVector        = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "返回",
-                        tint = Color.White
+                        tint               = Color.White
                     )
                 }
-                // 文件名（超长时截断）
                 Text(
-                    text = fileName,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = Color.White,
+                    text     = currentMedia?.name ?: "",
+                    style    = MaterialTheme.typography.titleSmall,
+                    color    = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
             }
-        }  // end topBar AnimatedVisibility
+        }
 
         // ============================================================
-        // AI 识图触发按钮（右下角浮动，仅 IMAGE 模式 + 结果未展示时显示）
+        // AI 识图触发按钮（右下角浮动，图片类型且结果未展示时显示）
         // ============================================================
         AnimatedVisibility(
-            visible = showBars
-                   && mediaType == MediaType.IMAGE
-                   && analysisResult !is AiAnalysisResult.Success
-                   && analysisResult !is AiAnalysisResult.Error,
-            enter = fadeIn(tween(150)) + slideInVertically { it },
-            exit  = fadeOut(tween(150)) + slideOutVertically { it },
+            visible  = showBars
+                    && currentMedia?.mediaType == MediaType.IMAGE
+                    && analysisResult !is AiAnalysisResult.Success
+                    && analysisResult !is AiAnalysisResult.Error,
+            enter    = fadeIn(tween(150)) + slideInVertically { it },
+            exit     = fadeOut(tween(150)) + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomEnd)
         ) {
             Box(
@@ -498,12 +396,11 @@ fun PhotoDetailScreen(
                     .navigationBarsPadding()
             ) {
                 when (analysisResult) {
-                    // Loading 状态：禁用按钮 + 菊花圈
                     is AiAnalysisResult.Loading -> {
                         FilledTonalButton(
                             onClick = {},
                             enabled = false,
-                            colors = ButtonDefaults.filledTonalButtonColors(
+                            colors  = ButtonDefaults.filledTonalButtonColors(
                                 containerColor = Color.White.copy(alpha = 0.15f),
                                 contentColor   = Color.White
                             )
@@ -517,16 +414,13 @@ fun PhotoDetailScreen(
                             Text("分析中…")
                         }
                     }
-                    // 其他状态（Idle）：显示单击下发起分析
                     else -> {
                         FilledTonalButton(
                             onClick = {
                                 if (aiState is AiState.NotConfigured) {
-                                    // 未配置：弹对话框引导用户去设置
                                     showAiConfigDialog = true
                                 } else {
-                                    // 已配置：直接发起分析
-                                    aiViewModel.analyzeImage(uri)
+                                    currentMedia?.let { aiViewModel.analyzeImage(it.uri) }
                                 }
                             },
                             colors = ButtonDefaults.filledTonalButtonColors(
@@ -535,9 +429,9 @@ fun PhotoDetailScreen(
                             )
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AutoAwesome,
+                                imageVector        = Icons.Default.AutoAwesome,
                                 contentDescription = null,
-                                modifier = Modifier.size(16.dp)
+                                modifier           = Modifier.size(16.dp)
                             )
                             Spacer(Modifier.width(6.dp))
                             Text("AI 识图")
@@ -546,46 +440,303 @@ fun PhotoDetailScreen(
                 }
             }
         }
-    }  // end Box
+    }
 }
+
+
+// =====================================================================
+// 私有：单张照片/视频页面内容（被 HorizontalPager 每个 slot 使用）
+// =====================================================================
+
+/**
+ * 单张媒体的可交互查看页
+ *
+ * 手势设计（自定义 awaitEachGesture，不使用 detectTransformGestures）：
+ *
+ *  scale > 1（已放大）
+ *    └─ 双指  → 缩放（消费），跟随双指中心点平移
+ *    └─ 单指  → 平移（消费），限制边界内
+ *
+ *  scale = 1（正常）
+ *    └─ 双指  → 缩放开始（消费）
+ *    └─ 纵向单指拖  → 下滑退出（消费），> 180px 触发 onNavigateBack
+ *    └─ 横向单指拖  → 不消费 → HorizontalPager 接管翻页
+ *
+ * @param mediaItem              当前页媒体信息
+ * @param isCurrentPage          是否是 Pager 当前可见页（控制 BackHandler 激活）
+ * @param sharedModifier         共享元素 Modifier（仅初始页附加）
+ * @param onScaleChanged         缩放变化回调（父级据此设置 HorizontalPager.userScrollEnabled）
+ * @param onDismissOffsetChanged 下滑偏移回调（父级据此调整背景透明度）
+ * @param onNavigateBack         退出详情页
+ * @param onToggleBars           切换顶部栏可见性
+ */
+@Composable
+private fun PhotoPageContent(
+    mediaItem             : MediaItem,
+    isCurrentPage         : Boolean,
+    sharedModifier        : Modifier,
+    onScaleChanged        : (Float) -> Unit,
+    onDismissOffsetChanged: (Float) -> Unit,
+    onNavigateBack        : () -> Unit,
+    onToggleBars          : () -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+
+    /** 当前缩放比（1f = 原始大小，最大 5x） */
+    var scale by remember { mutableFloatStateOf(1f) }
+
+    /** 图片 X 轴平移量（仅 scale>1 时有效） */
+    var offsetX by remember { mutableFloatStateOf(0f) }
+
+    /** 图片 Y 轴平移量（仅 scale>1 时有效） */
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
+    /** 下滑退出偏移量（由手势更新，动画结束后归零） */
+    var dismissOffsetY by remember { mutableFloatStateOf(0f) }
+
+    // 当前页且已放大时：返回键缩回到 1x，而不是直接退出详情页
+    BackHandler(enabled = isCurrentPage && scale > 1f) {
+        coroutineScope.launch {
+            animate(
+                initialValue  = scale,
+                targetValue   = 1f,
+                animationSpec = spring(stiffness = Spring.StiffnessMedium)
+            ) { v, _ ->
+                scale = v
+                onScaleChanged(v)
+            }
+            offsetX = 0f
+            offsetY = 0f
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (mediaItem.mediaType == MediaType.VIDEO) {
+            // ---- 视频：ExoPlayer 自动播放 ----
+            VideoPlayer(
+                uri      = mediaItem.uri,
+                modifier = Modifier.fillMaxSize().then(sharedModifier)
+            )
+        } else {
+            // ---- 图片：支持缩放 / 平移 / 下滑退出 ----
+            AsyncImage(
+                model              = ImageRequest.Builder(LocalContext.current)
+                    .data(mediaItem.uri)
+                    .build(),
+                contentDescription = mediaItem.name,
+                contentScale       = ContentScale.Fit,
+                modifier           = Modifier
+                    .fillMaxSize()
+                    .then(sharedModifier)
+                    // graphicsLayer：GPU 层做变换，不触发重新布局，确保流畅
+                    .graphicsLayer(
+                        scaleX       = scale,
+                        scaleY       = scale,
+                        translationX = offsetX,
+                        translationY = offsetY + dismissOffsetY
+                    )
+
+                    // --------------------------------------------------
+                    // 手势层①：自定义主手势（缩放 / 平移 / 下滑退出）
+                    //
+                    // 关键：横向事件在 scale=1 时不消费，
+                    //       让外层 HorizontalPager 捕获并处理翻页。
+                    // --------------------------------------------------
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            // 等待首次触摸（requireUnconsumed=false 避免漏接已消费的 DOWN）
+                            awaitFirstDown(requireUnconsumed = false)
+
+                            var prevSpan      = 0f              // 上一帧双指间距
+                            var isVertical    : Boolean? = null // 手势方向（null=未确定）
+                            var isMultiTouch  = false           // 是否已出现双指
+                            var localDismissY = 0f              // 本次手势累计纵向退出距离
+
+                            do {
+                                val event   = awaitPointerEvent()
+                                val pressed = event.changes.filter { it.pressed }
+
+                                when {
+                                    // ========== 双指：捏合缩放 ==========
+                                    pressed.size >= 2 -> {
+                                        isMultiTouch = true
+                                        isVertical   = null  // 多指时重置方向判断
+
+                                        val p1   = pressed[0].position
+                                        val p2   = pressed[1].position
+                                        val span = (p2 - p1).getDistance()
+
+                                        if (prevSpan > 0f && span > 0f) {
+                                            // 根据两指间距变化比值计算缩放因子
+                                            val newScale = (scale * (span / prevSpan)).coerceIn(1f, 5f)
+                                            scale = newScale
+                                            onScaleChanged(newScale)
+
+                                            if (newScale > 1.01f) {
+                                                // 跟随双指中心点平移，限制在边界内
+                                                val boundX = (size.width  * (newScale - 1f)) / 2f
+                                                val boundY = (size.height * (newScale - 1f)) / 2f
+                                                val cx  = (p1.x + p2.x) / 2f
+                                                val cy  = (p1.y + p2.y) / 2f
+                                                val pcx = (pressed[0].previousPosition.x +
+                                                           pressed[1].previousPosition.x) / 2f
+                                                val pcy = (pressed[0].previousPosition.y +
+                                                           pressed[1].previousPosition.y) / 2f
+                                                offsetX = (offsetX + (cx - pcx)).coerceIn(-boundX, boundX)
+                                                offsetY = (offsetY + (cy - pcy)).coerceIn(-boundY, boundY)
+                                            } else {
+                                                // 缩回到 1x：清除平移量
+                                                offsetX = 0f
+                                                offsetY = 0f
+                                            }
+                                        }
+                                        prevSpan = span
+                                        // 双指事件全部消费（阻止 Pager 误判为翻页）
+                                        event.changes.forEach { it.consume() }
+                                    }
+
+                                    // ========== 单指（非多指后续） ==========
+                                    pressed.size == 1 && !isMultiTouch -> {
+                                        val change = pressed[0]
+                                        // 用 position - previousPosition 计算位移增量，避免外部依赖
+                                        val dx = change.position.x - change.previousPosition.x
+                                        val dy = change.position.y - change.previousPosition.y
+
+                                        if (scale > 1.01f) {
+                                            // 已放大：消费事件，平移图片，限制边界
+                                            val boundX = (size.width  * (scale - 1f)) / 2f
+                                            val boundY = (size.height * (scale - 1f)) / 2f
+                                            offsetX = (offsetX + dx).coerceIn(-boundX, boundX)
+                                            offsetY = (offsetY + dy).coerceIn(-boundY, boundY)
+                                            change.consume()
+                                        } else {
+                                            // scale=1：首次超过 8px 时确定方向
+                                            if (isVertical == null &&
+                                                (abs(dx) > 8f || abs(dy) > 8f)
+                                            ) {
+                                                // 纵向分量更大 → 下滑退出；否则 → 横向翻页
+                                                isVertical = abs(dy) > abs(dx)
+                                            }
+                                            if (isVertical == true) {
+                                                // 纵向：消费事件，累计退出偏移并通知父级
+                                                change.consume()
+                                                localDismissY += dy
+                                                dismissOffsetY = localDismissY
+                                                onDismissOffsetChanged(localDismissY)
+                                            }
+                                            // 横向（isVertical==false）：
+                                            //   不消费 → 事件传递给 HorizontalPager 实现翻页
+                                        }
+                                    }
+                                }
+                            } while (event.changes.any { it.pressed })
+
+                            // ---- 手势结束：判断退出还是弹回 ----
+                            if (!isMultiTouch && isVertical == true) {
+                                if (abs(localDismissY) > 180f) {
+                                    // 拖动超过 180px → 退出详情页
+                                    onNavigateBack()
+                                } else {
+                                    // 拖动不足 → 弹性回弹到原位
+                                    coroutineScope.launch {
+                                        animate(
+                                            initialValue  = localDismissY,
+                                            targetValue   = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness    = Spring.StiffnessMedium
+                                            )
+                                        ) { v, _ ->
+                                            dismissOffsetY = v
+                                            onDismissOffsetChanged(v)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --------------------------------------------------
+                    // 手势层②：单击 + 双击
+                    //   单击 → 切换顶部栏可见性
+                    //   双击 → 放大 2.5x / 还原 1x（弹簧动画）
+                    // --------------------------------------------------
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { onToggleBars() },
+                            onDoubleTap = {
+                                coroutineScope.launch {
+                                    if (scale > 1f) {
+                                        // 已放大 → 还原到 1x
+                                        animate(
+                                            initialValue  = scale,
+                                            targetValue   = 1f,
+                                            animationSpec = spring(stiffness = Spring.StiffnessMedium)
+                                        ) { v, _ ->
+                                            scale = v
+                                            onScaleChanged(v)
+                                        }
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    } else {
+                                        // 正常大小 → 放大到 2.5x
+                                        animate(
+                                            initialValue  = 1f,
+                                            targetValue   = 2.5f,
+                                            animationSpec = spring(stiffness = Spring.StiffnessMedium)
+                                        ) { v, _ ->
+                                            scale = v
+                                            onScaleChanged(v)
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+            )
+        }
+    }
+}
+
+
+// =====================================================================
+// 私有：视频播放器组件（与原版完全相同）
+// =====================================================================
 
 /**
  * 基于 Media3 ExoPlayer 的视频播放组件
  *
- * - 进入即自动播放（playWhenReady = true）
- * - 显示内置控制条（进度条、播放/暂停按钮）
- * - Composable 退出组合时自动释放播放器资源，防止内存和解码器泄漏
+ * - 进入自动播放，显示内置控制条（进度条 / 播放暂停）
+ * - Composable 退出组合时自动释放播放器资源，防止内存/解码器泄漏
+ * - remember(uri) 保证翻页到新视频时自动重建播放器实例
  *
  * @param uri      视频内容 URI（content://media/...）
  * @param modifier 包含共享元素过渡和尺寸约束的修饰符
  */
 @Composable
 private fun VideoPlayer(
-    uri: Uri,
+    uri     : Uri,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
 
-    // 以 uri 为 key：URI 变化时重建播放器实例
     val player = remember(uri) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(Media3MediaItem.fromUri(uri))  // 绑定视频 URI
-            prepare()                                    // 开始缓冲
-            playWhenReady = true                         // 缓冲完成后自动播放
+            setMediaItem(Media3MediaItem.fromUri(uri))
+            prepare()
+            playWhenReady = true
         }
     }
 
-    // Composable 离开组合时释放播放器，避免音频和解码器资源泄漏
     DisposableEffect(player) {
         onDispose { player.release() }
     }
 
-    // AndroidView：将 View 体系的 PlayerView 桥接到 Compose
     AndroidView(
         factory = { ctx ->
             PlayerView(ctx).apply {
                 this.player = player
-                useController = true   // 显示内置播放控制条
+                useController = true
             }
         },
         modifier = modifier
