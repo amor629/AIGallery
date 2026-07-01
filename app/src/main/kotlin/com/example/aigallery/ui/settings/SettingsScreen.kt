@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -104,6 +105,11 @@ fun SettingsScreen(
 
             // ---- AI 状态指示卡片 ----
             AiStateCard(aiState = uiState.aiState)
+
+            // ---- 快速上手引导卡（仅未配置时展示）----
+            if (uiState.aiState is AiState.NotConfigured) {
+                DashScopeQuickStartCard()
+            }
 
             // ---- AI 配置表单 ----
             AiConfigForm(
@@ -209,7 +215,7 @@ private fun AiConfigForm(
         onValueChange = onBaseUrlChange,
         modifier = Modifier.fillMaxWidth(),
         label = { Text("API 地址 (Base URL)") },
-        placeholder = { Text("https://api.openai.com/v1") },
+        placeholder = { Text("https://dashscope.aliyuncs.com/compatible-mode/v1") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
         supportingText = {
@@ -295,6 +301,83 @@ private fun AiConfigForm(
             )
         ) {
             Text("清除 AI 配置")
+        }
+    }
+}
+
+// ============================================================
+// DashScope 快速上手引导卡（未配置状态专用）
+// ============================================================
+
+/**
+ * 当用户尚未配置 AI 时，展示阿里云 DashScope 的注册 / 获取 Key 步骤
+ *
+ * 设计原则：纯展示组件，无任何副作用，无状态
+ */
+@Composable
+private fun DashScopeQuickStartCard() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // 标题行
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "快速上手：阿里云 DashScope",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+
+            // 步骤说明
+            val steps = listOf(
+                "1. 访问 dashscope.aliyun.com，注册阿里云账号",
+                "2. 进入「模型服务 > API-KEY 管理」，创建新的 API Key",
+                "3. 复制 API Key（以 sk- 开头）并粘贴到下方输入框",
+                "4. API 地址填写如下（已预填）："
+            )
+            steps.forEach { step ->
+                Text(
+                    text = step,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+
+            // DashScope 地址（可让用户复制参考）
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Text(
+                    text = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+
+            Text(
+                text = "使用模型 qwen-vl-max，新用户有免费额度可试用",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
         }
     }
 }

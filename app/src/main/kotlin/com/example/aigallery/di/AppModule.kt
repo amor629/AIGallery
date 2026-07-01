@@ -1,9 +1,15 @@
 package com.example.aigallery.di
 
+import com.example.aigallery.ai.AiApiClient
+import com.example.aigallery.data.ai.AiChatService
+import com.example.aigallery.data.ai.AiImageRepositoryImpl
 import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
+import com.example.aigallery.domain.repository.IAiImageRepository
 import com.example.aigallery.domain.repository.IMediaRepository
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -12,6 +18,8 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
 import javax.inject.Singleton
 
 /**
@@ -47,6 +55,16 @@ abstract class AppModule {
         impl: MediaStoreRepository
     ): IMediaRepository
 
+    /**
+     * 将接口 IAiImageRepository 绑定到 AiImageRepositoryImpl
+     * PhotoDetailScreen 的 AiDetailViewModel 通过此接口调用 AI 分析
+     */
+    @Binds
+    @Singleton
+    abstract fun bindAiImageRepository(
+        impl: AiImageRepositoryImpl
+    ): IAiImageRepository
+
     companion object {
 
         /**
@@ -61,5 +79,42 @@ abstract class AppModule {
         @Singleton
         fun provideApplicationScope(): CoroutineScope =
             CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        /**
+         * 提供 Gson 实例（用于 Retrofit JSON 序列化 / 反序列化）
+         * serializeNulls = false：跳过 null 字段，减少请求体体积
+         */
+        @Provides
+        @Singleton
+        fun provideGson(): Gson = GsonBuilder().create()
+
+        /**
+         * 提供 Retrofit 实例
+         *
+         * baseUrl 使用占位地址；实际请求通过 @Url 动态覆盖，
+         * 这样用户修改 API 地址后无需重建 Retrofit。
+         *
+         * OkHttpClient 来自 [AiApiClient]，已内置：
+         *   - 认证拦截器（动态注入 Bearer Token）
+         *   - 安全日志拦截器（蓉闐 Authorization header）
+         *   - 超时配置（30s 连接 / 60s 读取）
+         */
+        @Provides
+        @Singleton
+        fun provideRetrofit(aiApiClient: AiApiClient, gson: Gson): Retrofit =
+            Retrofit.Builder()
+                .baseUrl("https://dashscope.aliyuncs.com/")  // 占位；被 @Url 覆盖
+                .client(aiApiClient.httpClient)
+                .addConverterFactory(GsonConverterFactory.create(gson))
+                .build()
+
+        /**
+         * 提供 AiChatService（Retrofit 动态代理）
+         * 注入到 [AiImageRepositoryImpl]，调用时动态传入完整 URL
+         */
+        @Provides
+        @Singleton
+        fun provideAiChatService(retrofit: Retrofit): AiChatService =
+            retrofit.create(AiChatService::class.java)
     }
 }

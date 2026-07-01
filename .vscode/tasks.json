@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Gradle: compileDebugKotlin",
+			"type": "shell",
+			"command": "cmd /c \"cd /d D:\\AIGallery && gradle compileDebugKotlin --no-daemon 2>&1\"",
+			"problemMatcher": [
+				"$kotlinc"
+			],
+			"group": "build"
+		}
+	]
+}

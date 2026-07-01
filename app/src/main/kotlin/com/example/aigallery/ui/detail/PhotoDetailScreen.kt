@@ -20,19 +20,39 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -50,13 +70,16 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem as Media3MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
+import com.example.aigallery.ai.AiState
+import com.example.aigallery.domain.model.AiAnalysisResult
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
@@ -105,8 +128,20 @@ fun PhotoDetailScreen(
     } else Modifier
 
     // ================================================================
-    // 状态定义
+    // AI 识图状态（Hilt ViewModel，生命周期与导航内局一致）
     // ================================================================
+
+    /** AI 识图 ViewModel：负责调用 Repository 并持有分析结果 */
+    val aiViewModel: AiDetailViewModel = hiltViewModel()
+
+    /** AI 全局配置状态：NotConfigured / Configured */
+    val aiState by aiViewModel.aiState.collectAsStateWithLifecycle()
+
+    /** 当前分析结果：Idle / Loading / Success / Error */
+    val analysisResult by aiViewModel.analysisResult.collectAsStateWithLifecycle()
+
+    /** 控制“请先配置 AI”引导对话框的显示 */
+    var showAiConfigDialog by remember { mutableStateOf(false) }
 
     /** 当前缩放比例（1f = 原始大小，最大 5x） */
     var scale by remember { mutableFloatStateOf(1f) }
@@ -149,8 +184,27 @@ fun PhotoDetailScreen(
     }
 
     // ================================================================
-    // 根布局：纯黑背景（透明度随下滑变化）
+    // AI 未配置引导对话框
+    // 用户点击“AI 识图”时若尚未配置，显示此对话框引导用户去设置页
     // ================================================================
+    if (showAiConfigDialog) {
+        AlertDialog(
+            onDismissRequest = { showAiConfigDialog = false },
+            title = { Text("AI 功能未配置") },
+            text = {
+                Text(
+                    "请点击左上角返回按鈕，" +
+                    "前往应用内“设置”页填写 API 地址和 Key，" +
+                    "配置完成后重新打开照片即可使用 AI 识图。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showAiConfigDialog = false }) {
+                    Text("知道了")
+                }
+            }
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -288,7 +342,101 @@ fun PhotoDetailScreen(
         } // end else（图片查看器）
 
         // ============================================================
-        // 顶部栏：返回按钮 + 文件名
+        // AI 结果面板（从底部滑入，Success 或 Error 时显示）
+        // IMAGE 和 VIDEO 均不显示（VIDEO 不支持 AI 识图）
+        // ============================================================
+        AnimatedVisibility(
+            visible = analysisResult is AiAnalysisResult.Success
+                   || analysisResult is AiAnalysisResult.Error,
+            enter = fadeIn(tween(200)) + slideInVertically { it },
+            exit  = fadeOut(tween(200)) + slideOutVertically { it },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            // 深色半透明卡片，确保文字在任意图片背景上可读
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 300.dp)
+                    .padding(horizontal = 12.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 72.dp),  // 留出底部 AI 按钮的空间
+                colors = CardDefaults.cardColors(
+                    containerColor = Color.Black.copy(alpha = 0.88f),
+                    contentColor   = Color.White
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // 标题行：AI 图标 + 标题 + 关闭/重试按钮
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // 左侧：金色 ✨ 图标 + "AI 识图" 标题
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = Color(0xFFFFD700),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "AI 识图",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        // 右侧：错误时显示重试按钮，始终显示关闭按钮
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (analysisResult is AiAnalysisResult.Error) {
+                                TextButton(
+                                    onClick = { aiViewModel.analyzeImage(uri) }
+                                ) {
+                                    Text(
+                                        text = "重试",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = aiViewModel::clearResult,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "关闭",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // 内容区（可滚动，防止长文本超出卡片边界）
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    ) {
+                        when (val r = analysisResult) {
+                            is AiAnalysisResult.Success ->
+                                Text(
+                                    text = r.description,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            is AiAnalysisResult.Error ->
+                                Text(
+                                    text = r.message,
+                                    color = Color(0xFFFF6B6B),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            else -> {}
+                        }
+                    }
+                }
+            }
+        }
         // 单击图片时淡入/淡出 + 从顶部滑入/滑出
         // ============================================================
         AnimatedVisibility(
@@ -330,13 +478,76 @@ fun PhotoDetailScreen(
                     modifier = Modifier.weight(1f)
                 )
             }
-        }
-    }
-}
+        }  // end topBar AnimatedVisibility
 
-// ============================================================
-// 视频播放器（私有组件）
-// ============================================================
+        // ============================================================
+        // AI 识图触发按钮（右下角浮动，仅 IMAGE 模式 + 结果未展示时显示）
+        // ============================================================
+        AnimatedVisibility(
+            visible = showBars
+                   && mediaType == MediaType.IMAGE
+                   && analysisResult !is AiAnalysisResult.Success
+                   && analysisResult !is AiAnalysisResult.Error,
+            enter = fadeIn(tween(150)) + slideInVertically { it },
+            exit  = fadeOut(tween(150)) + slideOutVertically { it },
+            modifier = Modifier.align(Alignment.BottomEnd)
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(end = 16.dp, bottom = 32.dp)
+                    .navigationBarsPadding()
+            ) {
+                when (analysisResult) {
+                    // Loading 状态：禁用按钮 + 菊花圈
+                    is AiAnalysisResult.Loading -> {
+                        FilledTonalButton(
+                            onClick = {},
+                            enabled = false,
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = Color.White.copy(alpha = 0.15f),
+                                contentColor   = Color.White
+                            )
+                        ) {
+                            CircularProgressIndicator(
+                                modifier    = Modifier.size(16.dp),
+                                color       = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("分析中…")
+                        }
+                    }
+                    // 其他状态（Idle）：显示单击下发起分析
+                    else -> {
+                        FilledTonalButton(
+                            onClick = {
+                                if (aiState is AiState.NotConfigured) {
+                                    // 未配置：弹对话框引导用户去设置
+                                    showAiConfigDialog = true
+                                } else {
+                                    // 已配置：直接发起分析
+                                    aiViewModel.analyzeImage(uri)
+                                }
+                            },
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = Color.White.copy(alpha = 0.15f),
+                                contentColor   = Color.White
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("AI 识图")
+                        }
+                    }
+                }
+            }
+        }
+    }  // end Box
+}
 
 /**
  * 基于 Media3 ExoPlayer 的视频播放组件

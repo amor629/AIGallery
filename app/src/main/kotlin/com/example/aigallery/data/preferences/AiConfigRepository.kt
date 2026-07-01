@@ -153,12 +153,15 @@ class AiConfigRepository @Inject constructor(
 
             client.newCall(request).execute().use { response ->
                 when {
-                    // 2xx：完全成功
-                    response.isSuccessful -> Result.success(Unit)
-                    // 401：服务器在线，Key 验证失败（URL 正确）
-                    response.code == 401 -> Result.success(Unit)
+                    // 2xx：服务器在线且 Key 有效
+                    response.isSuccessful ->
+                        Result.success(Unit)
+                    // 401：服务器在线，但 API Key 无效
+                    response.code == 401 ->
+                        Result.failure(Exception("API 地址可达，但 API Key 验证失败 (HTTP 401)，请检查 Key 是否正确"))
                     // 其他错误码
-                    else -> Result.failure(Exception("服务器返回 HTTP ${response.code}，请检查 API 地址"))
+                    else ->
+                        Result.failure(Exception("服务器返回 HTTP ${response.code}，请检查 API 地址是否正确"))
                 }
             }
         } catch (e: Exception) {
