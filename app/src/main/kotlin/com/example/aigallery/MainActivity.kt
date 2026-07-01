@@ -4,13 +4,25 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.example.aigallery.ui.detail.PhotoDetailScreen
 import com.example.aigallery.ui.gallery.GalleryScreen
 import com.example.aigallery.ui.settings.SettingsScreen
+import com.example.aigallery.domain.model.MediaType
+import com.example.aigallery.ui.LocalAnimatedVisibilityScope
+import com.example.aigallery.ui.LocalSharedTransitionScope
 import dagger.hilt.android.AndroidEntryPoint
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 /**
  * 应用主 Activity
@@ -24,6 +36,7 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @OptIn(ExperimentalSharedTransitionApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -32,21 +45,79 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val navController = rememberNavController()
 
+                SharedTransitionLayout {
                 NavHost(
                     navController = navController,
                     startDestination = "gallery"
                 ) {
+                    // ---- 相册主页 ----
                     composable("gallery") {
+                        val animScope = this  // AnimatedContentScope : AnimatedVisibilityScope
+                        CompositionLocalProvider(
+                            LocalSharedTransitionScope   provides this@SharedTransitionLayout,
+                            LocalAnimatedVisibilityScope provides animScope
+                        ) {
                         GalleryScreen(
-                            onNavigateToSettings = { navController.navigate("settings") }
+                            onNavigateToSettings = { navController.navigate("settings") },
+                            onNavigateToDetail = { mediaItem ->
+                                // 将 content URI 编码后作为查询参数，避免路径分隔符冲突
+                                val encodedUri = URLEncoder.encode(
+                                    mediaItem.uri.toString(),
+                                    StandardCharsets.UTF_8.name()
+                                )
+                                val encodedName = URLEncoder.encode(
+                                    mediaItem.name,
+                                    StandardCharsets.UTF_8.name()
+                                )
+                                navController.navigate("detail?uri=$encodedUri&name=$encodedName&type=${mediaItem.mediaType.name}")
+                            }
                         )
+                        } // CompositionLocalProvider
                     }
+
+                    // ---- 图片/视频详情页 ----
+                    composable(
+                        route = "detail?uri={uri}&name={name}&type={type}",
+                        arguments = listOf(
+                            navArgument("uri")  { type = NavType.StringType },
+                            navArgument("name") { type = NavType.StringType; defaultValue = "" },
+                            navArgument("type") { type = NavType.StringType; defaultValue = "IMAGE" }
+                        )
+                    ) { backStackEntry ->
+                        val animScope = this
+                        val rawUri  = backStackEntry.arguments?.getString("uri")  ?: ""
+                        val rawName = backStackEntry.arguments?.getString("name") ?: ""
+                        val uri  = android.net.Uri.parse(
+                            URLDecoder.decode(rawUri,  StandardCharsets.UTF_8.name())
+                        )
+                        val name = URLDecoder.decode(rawName, StandardCharsets.UTF_8.name())
+                        // 解析媒体类型字符串（未识别的值回退到 IMAGE）
+                        val mediaType = try {
+                            MediaType.valueOf(
+                                backStackEntry.arguments?.getString("type") ?: "IMAGE"
+                            )
+                        } catch (_: IllegalArgumentException) { MediaType.IMAGE }
+                        CompositionLocalProvider(
+                            LocalSharedTransitionScope   provides this@SharedTransitionLayout,
+                            LocalAnimatedVisibilityScope provides animScope
+                        ) {
+                            PhotoDetailScreen(
+                                uri = uri,
+                                fileName = name,
+                                mediaType = mediaType,
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+                    }
+
+                    // ---- 设置页（AI 配置入口）----
                     composable("settings") {
                         SettingsScreen(
                             onNavigateBack = { navController.popBackStack() }
                         )
                     }
                 }
+                } // SharedTransitionLayout
             }
         }
     }

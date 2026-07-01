@@ -4,7 +4,11 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +62,8 @@ import coil3.request.crossfade  // Coil3 3.x：crossfade 扩展函数位于 coil
 import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.domain.model.TimelineItem
+import com.example.aigallery.ui.LocalAnimatedVisibilityScope
+import com.example.aigallery.ui.LocalSharedTransitionScope
 import java.util.Locale
 
 // ============================================================
@@ -88,6 +94,7 @@ private val MEDIA_PERMISSIONS = arrayOf(
 @Composable
 fun GalleryScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToDetail: (MediaItem) -> Unit = {},  // 点击缩略图进入详情页
     viewModel: GalleryViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -210,6 +217,7 @@ fun GalleryScreen(
                 // ✅ 正常状态：展示时间轴媒体网格
                 MediaTimelineGrid(
                     items = timelineItems,
+                    onItemClick = onNavigateToDetail,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues)
@@ -237,6 +245,7 @@ fun GalleryScreen(
 @Composable
 private fun MediaTimelineGrid(
     items: List<TimelineItem>,
+    onItemClick: (MediaItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyVerticalGrid(
@@ -264,7 +273,10 @@ private fun MediaTimelineGrid(
         ) { index ->
             when (val item = items[index]) {
                 is TimelineItem.Header -> MonthHeaderItem(header = item)
-                is TimelineItem.Media  -> MediaThumbnailItem(media = item.media)
+                is TimelineItem.Media  -> MediaThumbnailItem(
+                    media = item.media,
+                    onClick = { onItemClick(item.media) }
+                )
             }
         }
     }
@@ -302,22 +314,43 @@ private fun MonthHeaderItem(header: TimelineItem.Header) {
  * - 不指定 size()：Coil3 根据 Modifier 尺寸自动请求合适分辨率（避免加载全尺寸）
  * - ContentScale.Crop：填满格子，中心裁剪，与系统相册效果一致
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-private fun MediaThumbnailItem(media: MediaItem) {
+private fun MediaThumbnailItem(
+    media: MediaItem,
+    onClick: () -> Unit = {}
+) {
+    // 读取 CompositionLocal 中的共享元素 Scope（由 MainActivity 的 NavHost 提供）
+    val sharedScope = LocalSharedTransitionScope.current
+    val visScope    = LocalAnimatedVisibilityScope.current
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)            // 强制正方形格子
+            .aspectRatio(1f)               // 强制正方形格子
+            .clickable(onClick = onClick)  // 点击进入详情页
     ) {
-        // ---- 缩略图 ----
+        // ---- 缩略图（支持共享元素过渡动画）----
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(media.uri)        // content:// URI，Coil3 直接支持
-                .crossfade(true)        // 淡入动画
+                .data(media.uri)           // content:// URI，Coil3 直接支持
+                .crossfade(true)           // 淡入动画
                 .build(),
-            contentDescription = null,  // 装饰性图片，无障碍不需要描述
+            contentDescription = null,     // 装饰性图片，无障碍不需要描述
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (sharedScope != null && visScope != null) {
+                        // 共享元素：此局缩略图与详情页大图共用同一 key，触发飞入动画
+                        with(sharedScope) {
+                            Modifier.sharedElement(
+                                state = rememberSharedContentState("media_${media.uri}"),
+                                animatedVisibilityScope = visScope
+                            )
+                        }
+                    } else Modifier  // Preview 或无 scope 时跳过
+                )
         )
 
         // ---- 视频标识：播放图标（左上角）+ 时长（右下角）----
