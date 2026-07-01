@@ -169,6 +169,19 @@ private fun resolvePermissionStatus(
     }
 }
 
+/**
+ * 判断当前是否为「局部授权」模式
+ *
+ * Android 14 引入的「选择照片」权限：
+ * - 用户选择「仅授权部分照片」→ READ_MEDIA_VISUAL_USER_SELECTED 已授权，READ_MEDIA_IMAGES 未授权
+ * - 此时 MediaStore 只返回用户勾选的那些照片，其他文件夹（下载、微信等）均不可见
+ */
+private fun isPartialMediaAccess(context: android.content.Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) !=
+            PackageManager.PERMISSION_GRANTED &&
+    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) ==
+            PackageManager.PERMISSION_GRANTED
+
 // ============================================================
 // 主页入口
 // ============================================================
@@ -217,25 +230,31 @@ fun GalleryScreen(
         )
     }
 
+    // 是否为「局部授权」（用户选了部分照片而非全量）
+    // 局部授权时其他文件夹的图片不可见，需提示用户去设置里改为全量访问
+    var isPartialAccess by remember { mutableStateOf(isPartialMediaAccess(context)) }
+
     // ---- 权限请求 Launcher ----
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
-        // 请求完成（无论结果），标记"已请求过"，重新计算状态
+        // 请求完成（无论结果），标记「已请求过」，重新计算状态
         hasEverAskedPermission = true
         permissionStatus = resolvePermissionStatus(context, activity, hasEverAskedPermission)
+        isPartialAccess = isPartialMediaAccess(context) // 同步更新局部授权状态
     }
 
-    // ---- 监听 Lifecycle.ON_RESUME：用户从系统设置返回时重新检查权限 ----
+    // ---- 监听 Lifecycle.ON_RESUME：回到前台时刷新权限状态和媒体列表 ----
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                val prev = permissionStatus
                 val next = resolvePermissionStatus(context, activity, hasEverAskedPermission)
                 permissionStatus = next
-                // 权限从拒绝 → 授权：ContentObserver 不会自动触发，需手动通知 ViewModel 重查
-                if (prev != PermissionStatus.Granted && next == PermissionStatus.Granted) {
+                isPartialAccess = isPartialMediaAccess(context)
+                // 每次回到前台（含后台新增文件、从系统设置授权后返回）都主动刷新
+                // ContentObserver 在 App 后台超过 5s 会停止，靠此调用补齐遗漏的文件变化
+                if (next == PermissionStatus.Granted) {
                     viewModel.refreshMedia()
                 }
             }
@@ -457,11 +476,26 @@ fun GalleryScreen(
             }
 
             is GalleryUiState.Empty -> {
-                EmptyContent(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues)
-                )
+                ) {
+                    // 局部授权时：优先提示用户如何开启全量访问
+                    if (isPartialAccess) {
+                        PartialAccessBanner(
+                            onOpenSettings = {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)
+                                    )
+                                )
+                            }
+                        )
+                    }
+                    EmptyContent(modifier = Modifier.weight(1f))
+                }
             }
 
             is GalleryUiState.Error -> {
@@ -494,28 +528,45 @@ fun GalleryScreen(
             }
 
             is GalleryUiState.Success -> {
-                // ✅ 正常状态：展示时间轴媒体网格
-                MediaTimelineGrid(
-                    items = timelineItems,
-                    isSelecting = isSelecting,
-                    selectedUris = selectedUris,
-                    onItemClick = { media ->
-                        if (isSelecting) {
-                            // 多选模式：单击切换选中状态
-                            viewModel.toggleSelection(media.uri)
-                        } else {
-                            // 普通模式：进入详情页
-                            onNavigateToDetail(media)
-                        }
-                    },
-                    onItemLongClick = { media ->
-                        // 长按：进入多选模式，同时选中此项
-                        viewModel.enterSelectionMode(media.uri)
-                    },
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues)
-                )
+                ) {
+                    // 局部授权提示横幅（仅部分照片可见时显示）
+                    if (isPartialAccess) {
+                        PartialAccessBanner(
+                            onOpenSettings = {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)
+                                    )
+                                )
+                            }
+                        )
+                    }
+                    // ✅ 正常状态：展示时间轴媒体网格
+                    MediaTimelineGrid(
+                        items = timelineItems,
+                        isSelecting = isSelecting,
+                        selectedUris = selectedUris,
+                        onItemClick = { media ->
+                            if (isSelecting) {
+                                // 多选模式：单击切换选中状态
+                                viewModel.toggleSelection(media.uri)
+                            } else {
+                                // 普通模式：进入详情页
+                                onNavigateToDetail(media)
+                            }
+                        },
+                        onItemLongClick = { media ->
+                            // 长按：进入多选模式，同时选中此项
+                            viewModel.enterSelectionMode(media.uri)
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
     }
@@ -895,6 +946,65 @@ private fun ErrorContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
         )
+    }
+}
+
+// ============================================================
+// 局部授权提示横幅
+// ============================================================
+
+/**
+ * 局部授权提示横幅
+ *
+ * 当用户选择「仅授权部分照片」时显示在相册顶部，说明为何某些文件夹不可见，
+ * 并引导用户前往系统设置将照片权限改为「允许访问所有照片」。
+ */
+@Composable
+private fun PartialAccessBanner(
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.LockOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "仅部分照片可见",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+            Text(
+                text = "你选择了「仅授权部分照片」，其他文件夹（如下载、微信）中的图片无法显示。" +
+                       "前往系统设置 → 权限 → 照片和视频，改为「允许访问所有照片」即可管理全部文件夹。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            OutlinedButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("去系统设置")
+            }
+        }
     }
 }
 
