@@ -44,8 +44,16 @@ data class MediaItem(
     val size: Long,
     val duration: Long,
     val bucketId: Long,
-    val bucketName: String
+    val bucketName: String,
+    /** Android 10+ IS_MOTION_PHOTO 标志；true 表示实况照片（Motion Photo） */
+    val isMotionPhoto: Boolean = false
 ) {
+    /**
+     * 是否为截图（根据所属文件夹名称判断，兼容中英文系统路径）
+     */
+    val isScreenshot: Boolean get() =
+        bucketName.lowercase().let { it.contains("screenshot") || it.contains("截图") }
+
     /**
      * 用于时间轴分组的日期键（格式：yyyy-MM，精确到月）
      * GalleryScreen 按此字段分组展示"XX年X月"的分组标题

@@ -54,6 +54,7 @@ class MediaStoreRepository @Inject constructor(
         MediaStore.MediaColumns.SIZE,
         MediaStore.MediaColumns.BUCKET_ID,
         MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+        MediaStore.Images.Media.IS_MOTION_PHOTO, // 实况照片标志（API 29+，minSdk=34 直接可用）
     )
 
     /** 视频查询列（在图片列基础上增加 DURATION） */
@@ -259,6 +260,8 @@ class MediaStoreRepository @Inject constructor(
             val colBucketName  = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
             val colDuration    = if (mediaType == MediaType.VIDEO)
                 cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) else -1
+            val colIsMotionPhoto = if (mediaType == MediaType.IMAGE)
+                cursor.getColumnIndex(MediaStore.Images.Media.IS_MOTION_PHOTO) else -1
 
             // ---- 逐行读取 Cursor ----
             while (cursor.moveToNext()) {
@@ -286,8 +289,9 @@ class MediaStoreRepository @Inject constructor(
                         height     = if (colHeight != -1) cursor.getInt(colHeight) else 0,
                         size       = cursor.getLong(colSize),
                         duration   = if (colDuration != -1) cursor.getLong(colDuration) else 0L,
-                        bucketId   = if (colBucketId   != -1) cursor.getLong(colBucketId)    else 0L,
-                        bucketName = if (colBucketName != -1) cursor.getString(colBucketName) ?: "其他" else "其他"
+                        bucketId      = if (colBucketId   != -1) cursor.getLong(colBucketId)    else 0L,
+                        bucketName    = if (colBucketName != -1) cursor.getString(colBucketName) ?: "其他" else "其他",
+                        isMotionPhoto = colIsMotionPhoto != -1 && cursor.getInt(colIsMotionPhoto) == 1
                     )
                 )
             }

@@ -10,6 +10,7 @@ import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import com.example.aigallery.data.mediastore.MediaPagingSource
 import com.example.aigallery.domain.model.MediaItem
+import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.domain.model.TimelineItem
 import com.example.aigallery.domain.repository.IMediaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
@@ -27,6 +29,21 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+// ============================================================
+// 媒体筛选器
+// ============================================================
+
+/**
+ * 相册分类筛选器
+ * GalleryScreen 顶部 Chip 使用此枚举控制当前显示的媒体类别
+ */
+enum class MediaFilter {
+    All,          // 全部
+    Screenshots,  // 截图
+    Videos,       // 视频
+    LivePhotos    // 实况照片
+}
 
 // ============================================================
 // UI 状态定义
@@ -116,15 +133,45 @@ class GalleryViewModel @Inject constructor(
      * - _refreshTrigger 变化时，flatMapLatest 取消旧 getAllMedia() 订阅（注销旧 ContentObserver），
      *   立即以新订阅重查 MediaStore。
      * - shareIn + replay=1：uiState / timelineMedia 共享同一上游，底层只有一个 ContentObserver。
-     * - replay=1 确保新订阅者立即收到最新数据。
      */
-    private val allMediaFlow = _refreshTrigger
+    private val rawMediaFlow = _refreshTrigger
         .flatMapLatest { mediaRepository.getAllMedia() }
         .shareIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             replay = 1
         )
+
+    // ---- 当前筛选器状态 ----
+    private val _currentFilter = MutableStateFlow(MediaFilter.All)
+
+    /** 当前分类筛选器，GalleryScreen 收集后渲染 Chip 选中状态 */
+    val currentFilter: StateFlow<MediaFilter> = _currentFilter.asStateFlow()
+
+    /** 切换筛选类别（由 GalleryScreen FilterChip 点击触发） */
+    fun setFilter(filter: MediaFilter) {
+        _currentFilter.value = filter
+    }
+
+    /**
+     * 经筛选后的媒体列表（所有下游 Flow 共享此上游）
+     *
+     * combine 语义：
+     * - rawMediaFlow 发射新列表（拍照、删除）时自动重新过滤
+     * - _currentFilter 变化（用户切换 Tab）时自动重新过滤
+     */
+    private val allMediaFlow = combine(rawMediaFlow, _currentFilter) { list, filter ->
+        when (filter) {
+            MediaFilter.All         -> list
+            MediaFilter.Screenshots -> list.filter { it.isScreenshot }
+            MediaFilter.Videos      -> list.filter { it.mediaType == MediaType.VIDEO }
+            MediaFilter.LivePhotos  -> list.filter { it.isMotionPhoto }
+        }
+    }.shareIn(
+        scope   = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        replay  = 1
+    )
 
     // ----------------------------------------------------------------
     // UI 状态（Loading / Success / Empty / Error）

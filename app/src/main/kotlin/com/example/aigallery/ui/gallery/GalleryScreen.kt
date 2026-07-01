@@ -57,6 +57,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -211,6 +212,8 @@ fun GalleryScreen(
     val isSelecting by viewModel.isSelecting.collectAsStateWithLifecycle()
     val selectedUris by viewModel.selectedUris.collectAsStateWithLifecycle()
     val deleteRequest by viewModel.deleteRequest.collectAsStateWithLifecycle()
+    // ---- 分类筛选器 ----
+    val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
 
     // ---- 是否显示"确认删除"对话框（在系统弹窗之前的 App 内确认）----
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -494,6 +497,11 @@ fun GalleryScreen(
                             }
                         )
                     }
+                    // 分类筛选 Chip 行（空中展示，方便用户切换回全部）
+                    FilterChipRow(
+                        currentFilter    = currentFilter,
+                        onFilterSelected = viewModel::setFilter
+                    )
                     EmptyContent(modifier = Modifier.weight(1f))
                 }
             }
@@ -546,6 +554,11 @@ fun GalleryScreen(
                             }
                         )
                     }
+                    // 分类筛选 Chip 行
+                    FilterChipRow(
+                        currentFilter    = currentFilter,
+                        onFilterSelected = viewModel::setFilter
+                    )
                     // ✅ 正常状态：展示时间轴媒体网格
                     MediaTimelineGrid(
                         items = timelineItems,
@@ -946,6 +959,43 @@ private fun ErrorContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp)
         )
+    }
+}
+
+// ============================================================
+// 分类筛选 Chip 行
+// ============================================================
+
+/**
+ * 相册分类筛选横向 Chip 行（全部 / 截图 / 视频 / 实况照片）
+ *
+ * 滚动时也可水平滑动，防止更多类别时溢出屏幕。
+ */
+@Composable
+@Composable
+private fun FilterChipRow(
+    currentFilter   : MediaFilter,
+    onFilterSelected: (MediaFilter) -> Unit,
+    modifier        : Modifier = Modifier
+) {
+    val options = listOf(
+        MediaFilter.All        to "全部",
+        MediaFilter.Screenshots to "截图",
+        MediaFilter.Videos      to "视频",
+        MediaFilter.LivePhotos  to "实况照片",
+    )
+    LazyRow(
+        modifier           = modifier.fillMaxWidth(),
+        contentPadding     = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(options) { (filter, label) ->
+            FilterChip(
+                selected = currentFilter == filter,
+                onClick  = { onFilterSelected(filter) },
+                label    = { Text(label) }
+            )
+        }
     }
 }
 
