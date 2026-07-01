@@ -85,17 +85,41 @@ class GalleryViewModel @Inject constructor(
 ) : ViewModel() {
 
     // ----------------------------------------------------------------
+    // 手动刷新触发器（权限授予后强制重查 MediaStore）
+    // ----------------------------------------------------------------
+
+    /**
+     * 每次调用 [refreshMedia] 时更新时间戳，驱动 allMediaFlow 重新订阅 getAllMedia()。
+     *
+     * 背景：ContentObserver 只监听文件新增/删除事件，
+     *       用户在系统设置中授予权限不会触发 ContentObserver，
+     *       因此需要此机制在权限恢复后主动刷新。
+     */
+    private val _refreshTrigger = MutableStateFlow(0L)
+
+    /**
+     * 通知 ViewModel 立即重新查询 MediaStore。
+     *
+     * GalleryScreen 在 ON_RESUME 检测到权限从拒绝变为授权时调用此函数。
+     */
+    fun refreshMedia() {
+        _refreshTrigger.value = System.currentTimeMillis()
+    }
+
+    // ----------------------------------------------------------------
     // 共享底层数据流（只订阅 MediaStore 一次，避免注册多个 ContentObserver）
     // ----------------------------------------------------------------
 
     /**
      * 所有媒体的原始列表（含响应式更新）
      *
-     * shareIn + replay=1：
-     * - [uiState] 和 [pagedMedia] 共享同一个上游 Flow，底层只有一个 ContentObserver
-     * - replay=1 确保新订阅者立即收到最新数据，不需要等待下次 MediaStore 变化
+     * - _refreshTrigger 变化时，flatMapLatest 取消旧 getAllMedia() 订阅（注销旧 ContentObserver），
+     *   立即以新订阅重查 MediaStore。
+     * - shareIn + replay=1：uiState / timelineMedia 共享同一上游，底层只有一个 ContentObserver。
+     * - replay=1 确保新订阅者立即收到最新数据。
      */
-    private val allMediaFlow = mediaRepository.getAllMedia()
+    private val allMediaFlow = _refreshTrigger
+        .flatMapLatest { mediaRepository.getAllMedia() }
         .shareIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),

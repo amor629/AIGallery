@@ -231,8 +231,13 @@ fun GalleryScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                // App 重新获得焦点（可能从系统设置返回），刷新权限状态
-                permissionStatus = resolvePermissionStatus(context, activity, hasEverAskedPermission)
+                val prev = permissionStatus
+                val next = resolvePermissionStatus(context, activity, hasEverAskedPermission)
+                permissionStatus = next
+                // 权限从拒绝 → 授权：ContentObserver 不会自动触发，需手动通知 ViewModel 重查
+                if (prev != PermissionStatus.Granted && next == PermissionStatus.Granted) {
+                    viewModel.refreshMedia()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
