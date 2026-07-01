@@ -1,0 +1,96 @@
+# ============================================================
+# .gitignore — AI Gallery Android 项目
+# 确保以下内容永远不进入版本控制：
+#   - 任何密钥、证书、签名文件
+#   - 本地机器配置
+#   - 构建产物
+# ============================================================
+
+# ============================================================
+# ⚠️ 安全优先：密钥与敏感文件（绝对不能提交）
+# ============================================================
+# Android 签名密钥
+*.jks
+*.keystore
+*.p12
+*.pfx
+# 任何命名包含 secret / key / credential 的文件
+*secret*
+*credential*
+*api_key*
+# 环境变量文件
+.env
+.env.*
+# Google 服务配置（含 Firebase API Key）
+google-services.json
+GoogleService-Info.plist
+
+# ============================================================
+# 本地机器配置（每台开发机不同，不应共享）
+# ============================================================
+# Android SDK 路径（Android Studio 自动生成）
+local.properties
+# Gradle 本地配置覆盖
+gradle-local.properties
+
+# ============================================================
+# 构建产物（可由源码重新生成，无需跟踪）
+# ============================================================
+build/
+**/build/
+.gradle/
+**/.gradle/
+# APK / AAB 产物
+*.apk
+*.aab
+*.ap_
+# ProGuard mapping（Release 时本地保留，不提交）
+mapping.txt
+seeds.txt
+usage.txt
+
+# ============================================================
+# Android Studio / IntelliJ IDE 文件
+# ============================================================
+.idea/
+*.iml
+*.ipr
+*.iws
+# 捕获文件
+captures/
+# 用户专属的 IDE 配置（覆盖 .idea 中可提交的部分）
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/libraries
+.idea/caches
+# Android Studio 3.1+
+.idea/caches/build_file_checksums.ser
+
+# ============================================================
+# 操作系统产生的文件
+# ============================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+# Linux
+*~
+
+# ============================================================
+# 其他
+# ============================================================
+# Kotlin 编译器会话文件（临时文件，每次编译自动生成）
+.kotlin/
+# Kotlin 增量编译缓存
+*.kotlin_module
+# Navigation SafeArgs 生成代码（由 Gradle 生成）
+# （如果使用 Safe Args 插件，以下目录会自动生成）
+# app/build/generated/source/navigation-args/

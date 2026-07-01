@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        应用 Activity 主题
+        使用 Android 内置的无 ActionBar 主题作为 XML 基础
+        Compose 的 MaterialTheme 会接管所有 UI 样式，此处仅控制窗口属性
+    -->
+    <style name="Theme.AIGallery" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- 窗口背景设为透明，配合 Compose 的 Surface 颜色使用 -->
+        <item name="android:windowBackground">@android:color/white</item>
+        <!-- 状态栏和导航栏颜色由 enableEdgeToEdge() 控制 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

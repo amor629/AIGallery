@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AndroidManifest.xml — 应用清单
+    声明权限、组件（Activity）和应用入口
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ======================================================
+         媒体读取权限（Android 13+ 细粒度权限）
+         ⚠️ 运行时按需申请，不在启动时批量弹窗
+         ====================================================== -->
+    <!-- 读取图片（Android 13+，API 33+） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- 读取视频（Android 13+，API 33+） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- 部分媒体授权：用户可只授权选定的媒体（Android 14+，API 34+） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- ======================================================
+         网络权限
+         仅 AI 可选模块使用，用户未配置 Key 时不会发起任何网络请求
+         ====================================================== -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".AIGalleryApp"
+        android:allowBackup="true"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AIGallery">
+        <!-- 暂未添加自定义图标，后续阶段补充 mipmap 资源后再加回 android:icon / android:roundIcon -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.AIGallery">
+            <!-- 应用启动入口 -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
