@@ -170,8 +170,25 @@ class MediaStoreRepository @Inject constructor(
             selectionArgs = null,
             mediaType = MediaType.VIDEO
         )
-        // 合并图片和视频，按"有效时间"降序排列
-        return (images + videos).sortedByDescending { item ->
+
+        // 实况照片配对：以「相册 ID + 文件基名（不含扩展名）」为键，建立视频快速查找表
+        // 覆盖 Samsung Live Photo、Apple Live Photo 导入、部分 Motion Photo 方案
+        val videoPairMap: Map<Pair<Long, String>, android.net.Uri> = buildMap {
+            for (video in videos) {
+                val baseName = video.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
+                put(Pair(video.bucketId, baseName), video.uri)
+            }
+        }
+
+        // 为每张图片尝试匹配同相册同基名的视频
+        val pairedImages = images.map { image ->
+            val baseName = image.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
+            val pairUri = videoPairMap[Pair(image.bucketId, baseName)]
+            if (pairUri != null) image.copy(livePairUri = pairUri) else image
+        }
+
+        // 合并图片和视频，按「有效时间」降序排列
+        return (pairedImages + videos).sortedByDescending { item ->
             if (item.dateTaken > 0) item.dateTaken else item.dateAdded
         }
     }

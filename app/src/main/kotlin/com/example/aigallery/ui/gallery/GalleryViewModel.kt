@@ -165,7 +165,7 @@ class GalleryViewModel @Inject constructor(
             MediaFilter.All         -> list
             MediaFilter.Screenshots -> list.filter { it.isScreenshot }
             MediaFilter.Videos      -> list.filter { it.mediaType == MediaType.VIDEO }
-            MediaFilter.LivePhotos  -> list.filter { it.isMotionPhoto }
+            MediaFilter.LivePhotos  -> list.filter { it.isLivePhoto }
         }
     }.shareIn(
         scope   = viewModelScope,

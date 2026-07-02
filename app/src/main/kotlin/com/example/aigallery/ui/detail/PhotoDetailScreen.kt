@@ -454,7 +454,7 @@ fun PhotoDetailScreen(
         // 播放实况按鈕（左下角，实况照片时显示）
         // ============================================================
         AnimatedVisibility(
-            visible  = showBars && currentMedia?.isMotionPhoto == true,
+            visible  = showBars && currentMedia?.isLivePhoto == true,
             enter    = fadeIn(tween(150)) + slideInVertically { it },
             exit     = fadeOut(tween(150)) + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomStart)
@@ -746,16 +746,16 @@ private fun PhotoPageContent(
                             }
                         )
                     }
-            )            // 实况照片：播放实况时将 ExoPlayer 叠加在图片上方
-            if (mediaItem.isMotionPhoto && isLivePlaying) {
+            )            // 实况照片：播放实况时将配对视频叠加在图片上方
+            if (mediaItem.isLivePhoto && isLivePlaying) {
                 VideoPlayer(
-                    uri           = mediaItem.uri,
+                    uri           = mediaItem.livePairUri!!,   // 使用配对视频 URI 而非图片 URI
                     isCurrentPage = isCurrentPage,
                     modifier      = Modifier.fillMaxSize()
                 )
             }
             // 实况照片：左下角 LIVE 角标（始终可见）
-            if (mediaItem.isMotionPhoto) {
+            if (mediaItem.isLivePhoto) {
                 Text(
                     text     = "LIVE",
                     style    = MaterialTheme.typography.labelSmall,
