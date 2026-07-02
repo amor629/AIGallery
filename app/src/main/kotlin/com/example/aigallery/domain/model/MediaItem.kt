@@ -45,26 +45,7 @@ data class MediaItem(
     val duration: Long,
     val bucketId: Long,
     val bucketName: String,
-    /** Android 10+ IS_MOTION_PHOTO 标志；true 表示实况照片（Motion Photo） */
-    val isMotionPhoto: Boolean = false,
-    /**
-     * 实况照片配对视频的 URI
-     *
-     * 通过文件名配对检测：同一相册下图片与视频基名相同（如 IMG_0001.HEIC + IMG_0001.MOV）
-     * 适用于 Samsung Live Photo、Apple Live Photo 导入、部分 Motion Photo 方案。
-     * null 表示非实况照片。
-     */
-    val livePairUri: Uri? = null
 ) {
-    /**
-     * 是否为实况照片
-     *
-     * 以下任一条件满足即为 true：
-     * - livePairUri != null：文件名配对找到了独立的配对视频（Apple Live Photo 导入等）
-     * - isMotionPhoto == true：MediaStore is_motion_photo 列为 1（荣耀/华为/Samsung 单文件内嵌格式）
-     */
-    val isLivePhoto: Boolean get() = livePairUri != null || isMotionPhoto
-
     /**
      * 是否为截图（根据所属文件夹名称判断，兼容中英文系统路径）
      */

@@ -164,29 +164,14 @@ class MediaStoreRepository @Inject constructor(
     // 私有：查询所有媒体（图片 + 视频合并）
     // ============================================================
 
-    /**
-     * 安全查询图片：优先使用含 is_motion_photo 的完整投影（荣耀/华为/Samsung），
-     * 若设备不支持该私有列（SQLiteException），自动回退到 AOSP 标准投影。
-     */
-    private fun safeQueryImages(selection: String?, selectionArgs: Array<String>?): List<MediaItem> =
-        try {
-            queryMedia(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                imageProjection, selection, selectionArgs, MediaType.IMAGE
-            )
-        } catch (e: Exception) {
-            // 不支持 is_motion_photo 私有列的设备在此处可能抛出多种异常：
-            //   SQLiteException（"no such column"）、IllegalArgumentException（"Invalid column"）等，
-            // 统一回退到 AOSP 标准投影，isMotionPhoto 在此路径始终为 false。
-            android.util.Log.w("MediaStore", "is_motion_photo column not supported, fallback: ${e.message}")
-            queryMedia(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                imageProjectionAOSP, selection, selectionArgs, MediaType.IMAGE
-            )
-        }
-
     private fun queryAllMedia(): List<MediaItem> {
-        val images = safeQueryImages(null, null)
+        val images = queryMedia(
+            contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection = imageProjection,
+            selection = null,
+            selectionArgs = null,
+            mediaType = MediaType.IMAGE
+        )
         val videos = queryMedia(
             contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             projection = videoProjection,
@@ -194,25 +179,8 @@ class MediaStoreRepository @Inject constructor(
             selectionArgs = null,
             mediaType = MediaType.VIDEO
         )
-
-        // 实况照片配对：以「相册 ID + 文件基名（不含扩展名）」为键，建立视频快速查找表
-        // 覆盖 Samsung Live Photo、Apple Live Photo 导入、部分 Motion Photo 方案
-        val videoPairMap: Map<Pair<Long, String>, android.net.Uri> = buildMap {
-            for (video in videos) {
-                val baseName = video.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
-                put(Pair(video.bucketId, baseName), video.uri)
-            }
-        }
-
-        // 为每张图片尝试匹配同相册同基名的视频
-        val pairedImages = images.map { image ->
-            val baseName = image.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
-            val pairUri = videoPairMap[Pair(image.bucketId, baseName)]
-            if (pairUri != null) image.copy(livePairUri = pairUri) else image
-        }
-
         // 合并图片和视频，按「有效时间」降序排列
-        return (pairedImages + videos).sortedByDescending { item ->
+        return (images + videos).sortedByDescending { item ->
             if (item.dateTaken > 0) item.dateTaken else item.dateAdded
         }
     }
@@ -224,7 +192,10 @@ class MediaStoreRepository @Inject constructor(
     private fun queryMediaByBucket(bucketId: Long): List<MediaItem> {
         val selection = "${MediaStore.MediaColumns.BUCKET_ID} = ?"
         val selectionArgs = arrayOf(bucketId.toString())
-        val images = safeQueryImages(selection, selectionArgs)
+        val images = queryMedia(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            imageProjection, selection, selectionArgs, MediaType.IMAGE
+        )
         val videos = queryMedia(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             videoProjection, selection, selectionArgs, MediaType.VIDEO
@@ -302,8 +273,6 @@ class MediaStoreRepository @Inject constructor(
             val colBucketName  = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
             val colDuration    = if (mediaType == MediaType.VIDEO)
                 cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) else -1
-            val colIsMotionPhoto = if (mediaType == MediaType.IMAGE)
-                cursor.getColumnIndex("is_motion_photo") else -1
 
             // ---- 逐行读取 Cursor ----
             while (cursor.moveToNext()) {
@@ -332,8 +301,7 @@ class MediaStoreRepository @Inject constructor(
                         size       = cursor.getLong(colSize),
                         duration   = if (colDuration != -1) cursor.getLong(colDuration) else 0L,
                         bucketId      = if (colBucketId   != -1) cursor.getLong(colBucketId)    else 0L,
-                        bucketName    = if (colBucketName != -1) cursor.getString(colBucketName) ?: "其他" else "其他",
-                        isMotionPhoto = colIsMotionPhoto != -1 && cursor.getInt(colIsMotionPhoto) == 1
+                        bucketName    = if (colBucketName != -1) cursor.getString(colBucketName) ?: "其他" else "其他"
                     )
                 )
             }

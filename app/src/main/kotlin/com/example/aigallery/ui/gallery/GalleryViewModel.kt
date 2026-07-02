@@ -41,8 +41,7 @@ import javax.inject.Inject
 enum class MediaFilter {
     All,          // 全部
     Screenshots,  // 截图
-    Videos,       // 视频
-    LivePhotos    // 实况照片
+    Videos        // 视频
 }
 
 // ============================================================
@@ -165,7 +164,6 @@ class GalleryViewModel @Inject constructor(
             MediaFilter.All         -> list
             MediaFilter.Screenshots -> list.filter { it.isScreenshot }
             MediaFilter.Videos      -> list.filter { it.mediaType == MediaType.VIDEO }
-            MediaFilter.LivePhotos  -> list.filter { it.isLivePhoto }
         }
     }.shareIn(
         scope   = viewModelScope,

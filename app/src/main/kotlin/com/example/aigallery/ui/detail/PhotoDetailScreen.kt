@@ -35,13 +35,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -88,11 +87,8 @@ import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
-import com.example.aigallery.data.mediastore.MotionPhotoHelper
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
@@ -179,10 +175,6 @@ fun PhotoDetailScreen(
     val pageScales = remember { mutableStateMapOf<Int, Float>() }
     val currentPageScale = pageScales[pagerState.currentPage] ?: 1f
 
-    // 实况照片播放状态：key=页面索引，value=是否正在播放动态视频
-    val pageLivePlaying = remember { mutableStateMapOf<Int, Boolean>() }
-    val currentPageLivePlaying = pageLivePlaying[pagerState.currentPage] ?: false
-
     /**
      * 当前页的下滑退出偏移（PhotoPageContent 通过回调上报）
      * 用于外层 Box 背景透明度计算，营造"图片消失"效果。
@@ -198,7 +190,7 @@ fun PhotoDetailScreen(
     LaunchedEffect(pagerState.currentPage) {
         aiViewModel.clearResult()
         dismissOffsetY = 0f
-        pageLivePlaying.clear()   // 翳页时停止实况播放
+
     }
 
     /** 当前可见页的媒体项（顶部栏标题、AI 按钮类型判断等使用） */
@@ -261,7 +253,6 @@ fun PhotoDetailScreen(
             PhotoPageContent(
                 mediaItem              = mediaItem,
                 isCurrentPage          = (pageIndex == pagerState.currentPage),
-                isLivePlaying          = pageLivePlaying[pageIndex] ?: false,
                 sharedModifier         = pageSharedModifier,
                 onScaleChanged         = { s -> pageScales[pageIndex] = s },
                 onDismissOffsetChanged = { d -> dismissOffsetY = d },
@@ -453,40 +444,6 @@ fun PhotoDetailScreen(
             }
         }
 
-        // ============================================================
-        // 播放实况按鈕（左下角，实况照片时显示）
-        // ============================================================
-        AnimatedVisibility(
-            visible  = showBars && currentMedia?.isLivePhoto == true,
-            enter    = fadeIn(tween(150)) + slideInVertically { it },
-            exit     = fadeOut(tween(150)) + slideOutVertically { it },
-            modifier = Modifier.align(Alignment.BottomStart)
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(start = 16.dp, bottom = 32.dp)
-                    .navigationBarsPadding()
-            ) {
-                FilledTonalButton(
-                    onClick = {
-                        val idx = pagerState.currentPage
-                        pageLivePlaying[idx] = !(pageLivePlaying[idx] ?: false)
-                    },
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = Color.White.copy(alpha = 0.15f),
-                        contentColor   = Color.White
-                    )
-                ) {
-                    Icon(
-                        imageVector        = Icons.Default.PlayCircle,
-                        contentDescription = null,
-                        modifier           = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (currentPageLivePlaying) "停止实况" else "播放实况")
-                }
-            }
-        }
     }
 }
 
@@ -521,7 +478,6 @@ fun PhotoDetailScreen(
 private fun PhotoPageContent(
     mediaItem             : MediaItem,
     isCurrentPage         : Boolean,
-    isLivePlaying         : Boolean = false,   // 实况照片是否正在播放动态视频
     sharedModifier        : Modifier,
     onScaleChanged        : (Float) -> Unit,
     onDismissOffsetChanged: (Float) -> Unit,
@@ -529,13 +485,6 @@ private fun PhotoPageContent(
     onToggleBars          : () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val context = LocalContext.current
-
-    /**
-     * 内嵌式实况照片（荣耀/华为/Samsung）提取出的临时 MP4 Uri
-     * null = 尚未提取或提取失败；以 mediaItem.id 为 key，翻页时自动清空
-     */
-    var embeddedVideoUri by remember(mediaItem.id) { mutableStateOf<Uri?>(null) }
 
     /** 当前缩放比（1f = 原始大小，最大 5x） */
     var scale by remember { mutableFloatStateOf(1f) }
@@ -756,48 +705,7 @@ private fun PhotoPageContent(
                             }
                         )
                     }
-            )            // 实况照片：播放实况时将视频叠加在图片上方
-            if (mediaItem.isLivePhoto && isLivePlaying) {
-                val videoUri = mediaItem.livePairUri ?: embeddedVideoUri
-                if (videoUri != null) {
-                    // 有视频 URI：独立配对文件或已完成提取的内嵌视频，直接播放
-                    VideoPlayer(
-                        uri           = videoUri,
-                        isCurrentPage = isCurrentPage,
-                        modifier      = Modifier.fillMaxSize()
-                    )
-                } else if (mediaItem.isMotionPhoto) {
-                    // 内嵌式实况照片（荣耀/华为/Samsung）：后台提取嵌入 MP4 并播放
-                    LaunchedEffect(mediaItem.id) {
-                        embeddedVideoUri = withContext(Dispatchers.IO) {
-                            MotionPhotoHelper.extractEmbeddedVideo(context, mediaItem.uri)
-                        }
-                    }
-                    // 提取期间显示白色进度圈
-                    CircularProgressIndicator(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(48.dp),
-                        color    = Color.White
-                    )
-                }
-            }
-            // 实况照片：左下角 LIVE 角标（始终可见）
-            if (mediaItem.isLivePhoto) {
-                Text(
-                    text     = "LIVE",
-                    style    = MaterialTheme.typography.labelSmall,
-                    color    = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 12.dp, bottom = 96.dp)
-                        .background(
-                            Color(0xFF2E7D32).copy(alpha = 0.85f),
-                            RoundedCornerShape(4.dp)
-                        )
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }        }
+            )        }
     }
 }
 

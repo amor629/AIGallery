@@ -983,7 +983,6 @@ private fun FilterChipRow(
         MediaFilter.All        to "全部",
         MediaFilter.Screenshots to "截图",
         MediaFilter.Videos      to "视频",
-        MediaFilter.LivePhotos  to "实况照片",
     )
     LazyRow(
         modifier           = modifier.fillMaxWidth(),
