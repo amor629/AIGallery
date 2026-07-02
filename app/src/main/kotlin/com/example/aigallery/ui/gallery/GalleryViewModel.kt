@@ -1,4 +1,4 @@
-package com.example.aigallery.ui.gallery
+﻿package com.example.aigallery.ui.gallery
 
 import android.content.IntentSender
 import android.net.Uri
@@ -697,4 +697,16 @@ class GalleryViewModel @Inject constructor(
             monthKey
         }
     }
+    /**
+     * AI 搜索结果批量删除 — 直接发起系统删除弹窗，无需进入可视化多选模式
+     * 配合 GalleryScreen 双重确认对话框使用
+     */
+    fun deleteMediaDirect(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            val intentSender = mediaRepository.buildDeleteRequest(uris)
+            _deleteRequest.value = intentSender
+        }
+    }
+
 }

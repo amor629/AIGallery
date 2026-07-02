@@ -1,4 +1,4 @@
-package com.example.aigallery.ui.gallery
+﻿package com.example.aigallery.ui.gallery
 
 import android.Manifest
 import android.app.Activity
@@ -238,9 +238,22 @@ fun GalleryScreen(
     BackHandler(enabled = isSearchActive) {
         viewModel.deactivateSearch()
     }
+    // 多选模式下拦截返回手势：优先退出多选而非退出 App
+    BackHandler(enabled = isSelecting) {
+        viewModel.clearSelection()
+    }
+
 
     // ---- 是否显示"确认删除"对话框（在系统弹窗之前的 App 内确认）----
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    // ---- AI 批量删除：双重确认对话框状态 ----
+    // 第一步确认（App 内提示）
+    var showSearchDeleteDialog1 by remember { mutableStateOf(false) }
+    // 第二步确认（强调不可逆）
+    var showSearchDeleteDialog2 by remember { mutableStateOf(false) }
+    // 待删除的 URI 列表（两步对话框间传递数据）
+    var pendingDeleteUris      by remember { mutableStateOf<List<Uri>>(emptyList()) }
+
 
     // ---- 权限相关状态 ----
 
@@ -302,6 +315,7 @@ fun GalleryScreen(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { _ ->
         // 无论用户确认还是取消，都退出多选模式（列表会由 MediaStore Flow 自动刷新）
+        viewModel.deactivateSearch()   // 搜索批删完成后同时退出搜索模式
         viewModel.clearSelection()
         viewModel.clearDeleteRequest()
     }
@@ -341,6 +355,73 @@ fun GalleryScreen(
             }
         )
     }
+
+    // ---- AI 搜索批删：第一步确认（App 内提示，告知将删除数量）----
+    if (showSearchDeleteDialog1) {
+        AlertDialog(
+            onDismissRequest = { showSearchDeleteDialog1 = false },
+            title = { Text("批量删除确认") },
+            text = {
+                Text(
+                    "AI 为您找到 ${pendingDeleteUris.size} 张相关图片。\n\n" +
+                    "确定要删除全部结果吗？此操作无法撤销。"
+                )
+            },
+            confirmButton = {
+                FilledTonalButton(onClick = {
+                    showSearchDeleteDialog1 = false
+                    showSearchDeleteDialog2 = true   // 进入第二步确认
+                }) { Text("下一步") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSearchDeleteDialog1 = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    // ---- AI 搜索批删：第二步确认（强调不可逆，使用危险色按钮）----
+    if (showSearchDeleteDialog2) {
+        AlertDialog(
+            onDismissRequest = { showSearchDeleteDialog2 = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("最终确认删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            text = {
+                Text(
+                    "即将永久删除 ${pendingDeleteUris.size} 张图片，\n" +
+                    "删除后无法恢复，请确认继续。"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSearchDeleteDialog2 = false
+                        viewModel.deleteMediaDirect(pendingDeleteUris)  // 发起系统删除
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("永久删除", color = MaterialTheme.colorScheme.onError) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSearchDeleteDialog2 = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
 
     // ---- 顶部栏折叠行为（随滚动收缩）----
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
@@ -398,6 +479,23 @@ fun GalleryScreen(
                             )
                         },
                         actions = {
+                            // AI 批量删除按钮（仅在搜索有结果时显示）
+                            val searchResults = (searchState as? GalleryViewModel.SearchUiState.Success)?.results
+                            if (!searchResults.isNullOrEmpty()) {
+                                IconButton(
+                                    onClick = {
+                                        pendingDeleteUris = searchResults.map { it.uri }
+                                        showSearchDeleteDialog1 = true
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "批量删除搜索结果",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+
                             // 点击搜索按钮提交查询
                             IconButton(
                                 onClick  = { viewModel.performSearch(searchInput) },
