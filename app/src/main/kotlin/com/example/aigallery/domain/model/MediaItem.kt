@@ -57,9 +57,13 @@ data class MediaItem(
     val livePairUri: Uri? = null
 ) {
     /**
-     * 是否为实况照片（在同相册中找到配对视频时为 true）
+     * 是否为实况照片
+     *
+     * 以下任一条件满足即为 true：
+     * - livePairUri != null：文件名配对找到了独立的配对视频（Apple Live Photo 导入等）
+     * - isMotionPhoto == true：MediaStore is_motion_photo 列为 1（荣耀/华为/Samsung 单文件内嵌格式）
      */
-    val isLivePhoto: Boolean get() = livePairUri != null
+    val isLivePhoto: Boolean get() = livePairUri != null || isMotionPhoto
 
     /**
      * 是否为截图（根据所属文件夹名称判断，兼容中英文系统路径）

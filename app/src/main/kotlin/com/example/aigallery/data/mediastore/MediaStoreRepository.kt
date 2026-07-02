@@ -42,8 +42,12 @@ class MediaStoreRepository @Inject constructor(
     // 查询投影（只要元数据，不要像素）
     // ============================================================
 
-    /** 图片查询列（不含像素 DATA 路径，使用 content:// URI 代替） */
-    private val imageProjection = arrayOf(
+    /**
+     * 图片基础投影（不含厂商扩展列）
+     *
+     * 仅包含 AOSP 标准列，作为 AOSP 设备的兜底投影以及视频查询的基础。
+     */
+    private val imageProjectionAOSP = arrayOf(
         MediaStore.MediaColumns._ID,
         MediaStore.MediaColumns.DISPLAY_NAME,
         MediaStore.MediaColumns.DATE_ADDED,      // 单位：秒
@@ -54,15 +58,20 @@ class MediaStoreRepository @Inject constructor(
         MediaStore.MediaColumns.SIZE,
         MediaStore.MediaColumns.BUCKET_ID,
         MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-        // 注意：不在 projection 里放 "is_motion_photo"。
-        // 该列为 Samsung 私有扩展，非标准 AOSP API；把它放入 projection 会导致非三星设备
-        // 的 ContentResolver.query() 抛出 SQLiteException（未知列名）。
-        // 转而在 cursor 返回后用 getColumnIndex 软探测：三星设备返回正常索引，
-        // 其他设备返回 -1，代码中已用 (col != -1) 判断，自动安全降级。
     )
 
-    /** 视频查询列（在图片列基础上增加 DURATION） */
-    private val videoProjection = imageProjection + arrayOf(
+    /**
+     * 图片完整投影：含 is_motion_photo 实况照片列
+     *
+     * 荣耀（MagicOS）、华为（HarmonyOS）、Samsung 等厂商在 MediaStore 中扩展了
+     * is_motion_photo 私有列（值为 1 表示该图片是单文件内嵌式实况照片）。
+     * AOSP 设备（Pixel 原生、AOSP GSI 等）不支持此列；safeQueryImages() 会在
+     * 查询抛出 SQLiteException 时自动回退到 imageProjectionAOSP。
+     */
+    private val imageProjection = imageProjectionAOSP + arrayOf("is_motion_photo")
+
+    /** 视频查询列（AOSP 标准列 + DURATION，不含 is_motion_photo） */
+    private val videoProjection = imageProjectionAOSP + arrayOf(
         MediaStore.Video.VideoColumns.DURATION   // 单位：毫秒
     )
 
@@ -155,14 +164,26 @@ class MediaStoreRepository @Inject constructor(
     // 私有：查询所有媒体（图片 + 视频合并）
     // ============================================================
 
+    /**
+     * 安全查询图片：优先使用含 is_motion_photo 的完整投影（荣耀/华为/Samsung），
+     * 若设备不支持该私有列（SQLiteException），自动回退到 AOSP 标准投影。
+     */
+    private fun safeQueryImages(selection: String?, selectionArgs: Array<String>?): List<MediaItem> =
+        try {
+            queryMedia(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                imageProjection, selection, selectionArgs, MediaType.IMAGE
+            )
+        } catch (e: android.database.sqlite.SQLiteException) {
+            // AOSP 设备：is_motion_photo 私有列不存在，退回标准投影（isMotionPhoto 始终为 false）
+            queryMedia(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                imageProjectionAOSP, selection, selectionArgs, MediaType.IMAGE
+            )
+        }
+
     private fun queryAllMedia(): List<MediaItem> {
-        val images = queryMedia(
-            contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection = imageProjection,
-            selection = null,
-            selectionArgs = null,
-            mediaType = MediaType.IMAGE
-        )
+        val images = safeQueryImages(null, null)
         val videos = queryMedia(
             contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             projection = videoProjection,
@@ -200,10 +221,7 @@ class MediaStoreRepository @Inject constructor(
     private fun queryMediaByBucket(bucketId: Long): List<MediaItem> {
         val selection = "${MediaStore.MediaColumns.BUCKET_ID} = ?"
         val selectionArgs = arrayOf(bucketId.toString())
-        val images = queryMedia(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            imageProjection, selection, selectionArgs, MediaType.IMAGE
-        )
+        val images = safeQueryImages(selection, selectionArgs)
         val videos = queryMedia(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             videoProjection, selection, selectionArgs, MediaType.VIDEO

@@ -88,8 +88,11 @@ import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
+import com.example.aigallery.data.mediastore.MotionPhotoHelper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
@@ -526,6 +529,13 @@ private fun PhotoPageContent(
     onToggleBars          : () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    /**
+     * 内嵌式实况照片（荣耀/华为/Samsung）提取出的临时 MP4 Uri
+     * null = 尚未提取或提取失败；以 mediaItem.id 为 key，翻页时自动清空
+     */
+    var embeddedVideoUri by remember(mediaItem.id) { mutableStateOf<Uri?>(null) }
 
     /** 当前缩放比（1f = 原始大小，最大 5x） */
     var scale by remember { mutableFloatStateOf(1f) }
@@ -746,13 +756,31 @@ private fun PhotoPageContent(
                             }
                         )
                     }
-            )            // 实况照片：播放实况时将配对视频叠加在图片上方
+            )            // 实况照片：播放实况时将视频叠加在图片上方
             if (mediaItem.isLivePhoto && isLivePlaying) {
-                VideoPlayer(
-                    uri           = mediaItem.livePairUri!!,   // 使用配对视频 URI 而非图片 URI
-                    isCurrentPage = isCurrentPage,
-                    modifier      = Modifier.fillMaxSize()
-                )
+                val videoUri = mediaItem.livePairUri ?: embeddedVideoUri
+                if (videoUri != null) {
+                    // 有视频 URI：独立配对文件或已完成提取的内嵌视频，直接播放
+                    VideoPlayer(
+                        uri           = videoUri,
+                        isCurrentPage = isCurrentPage,
+                        modifier      = Modifier.fillMaxSize()
+                    )
+                } else if (mediaItem.isMotionPhoto) {
+                    // 内嵌式实况照片（荣耀/华为/Samsung）：后台提取嵌入 MP4 并播放
+                    LaunchedEffect(mediaItem.id) {
+                        embeddedVideoUri = withContext(Dispatchers.IO) {
+                            MotionPhotoHelper.extractEmbeddedVideo(context, mediaItem.uri)
+                        }
+                    }
+                    // 提取期间显示白色进度圈
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(48.dp),
+                        color    = Color.White
+                    )
+                }
             }
             // 实况照片：左下角 LIVE 角标（始终可见）
             if (mediaItem.isLivePhoto) {
