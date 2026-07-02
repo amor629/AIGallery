@@ -8,10 +8,15 @@ import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.example.aigallery.ai.AiState
+import com.example.aigallery.ai.AiStateManager
 import com.example.aigallery.data.mediastore.MediaPagingSource
 import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
+import com.example.aigallery.domain.model.SearchCriteria
+import com.example.aigallery.domain.model.SearchMediaType
 import com.example.aigallery.domain.model.TimelineItem
+import com.example.aigallery.domain.repository.IAiSearchRepository
 import com.example.aigallery.domain.repository.IMediaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -97,7 +102,9 @@ sealed interface GalleryUiState {
 @OptIn(ExperimentalCoroutinesApi::class)  // flatMapLatest 为实验性 API，显式声明使用意图
 @HiltViewModel
 class GalleryViewModel @Inject constructor(
-    private val mediaRepository: IMediaRepository
+    private val mediaRepository: IMediaRepository,
+    private val aiSearchRepository: IAiSearchRepository,
+    private val aiStateManager: AiStateManager
 ) : ViewModel() {
 
     // ----------------------------------------------------------------
@@ -420,6 +427,196 @@ class GalleryViewModel @Inject constructor(
         }
 
         return result
+    }
+
+    // ----------------------------------------------------------------
+    // 搜索状态（AI 自然语言检索）
+    // ----------------------------------------------------------------
+
+    /**
+     * 搜索栏是否处于激活状态（true = 顶栏切换为搜索输入框模式）
+     */
+    private val _isSearchActive = MutableStateFlow(false)
+    val isSearchActive: StateFlow<Boolean> = _isSearchActive.asStateFlow()
+
+    /**
+     * 用户在搜索框中输入的原始文字（每次按键更新，用于 UI 同步）
+     */
+    private val _searchInput = MutableStateFlow("")
+    val searchInput: StateFlow<String> = _searchInput.asStateFlow()
+
+    /**
+     * 搜索执行状态（密封接口，UI 根据此渲染加载/结果/错误）
+     *
+     * - [SearchUiState.Idle]     未激活搜索，显示正常时间轴
+     * - [SearchUiState.Loading]  AI 正在解析查询
+     * - [SearchUiState.Success]  搜索完成，[SearchUiState.Success.results] 含匹配列表
+     * - [SearchUiState.Empty]    搜索完成但没有匹配项
+     * - [SearchUiState.Error]    AI 调用失败或 AI 未配置
+     */
+    private val _searchState = MutableStateFlow<SearchUiState>(SearchUiState.Idle)
+    val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
+
+    // ----------------------------------------------------------------
+    // 搜索操作
+    // ----------------------------------------------------------------
+
+    /** 激活搜索栏（点击搜索图标时调用） */
+    fun activateSearch() {
+        _isSearchActive.value = true
+        _searchState.value = SearchUiState.Idle
+        _searchInput.value = ""
+    }
+
+    /** 实时同步搜索输入框文字（每次 TextField 值变化时调用） */
+    fun onSearchInputChanged(text: String) {
+        _searchInput.value = text
+    }
+
+    /**
+     * 退出搜索模式，恢复时间轴
+     * 调用时机：按返回键、点击关闭按钮
+     */
+    fun deactivateSearch() {
+        _isSearchActive.value = false
+        _searchState.value = SearchUiState.Idle
+        _searchInput.value = ""
+    }
+
+    /**
+     * 执行搜索
+     *
+     * 逻辑：
+     * 1. 若查询文本为空 → 重置为 Idle
+     * 2. 若 AI 未配置 → 仅用文件名/相册名做本地模糊匹配
+     * 3. 若 AI 已配置 → 先发给 LLM 解析结构化条件，再在本地列表过滤
+     *    解析失败时 fallback 到本地模糊匹配
+     *
+     * @param query 用户输入的查询文字（由 GalleryScreen 搜索框提交时传入）
+     */
+    fun performSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            _searchState.value = SearchUiState.Idle
+            return
+        }
+
+        viewModelScope.launch {
+            _searchState.value = SearchUiState.Loading
+
+            // 取当前完整媒体列表（来自已过滤的 allMedia，含当前 Tab 筛选条件）
+            val allItems = allMedia.value
+
+            // 判断 AI 是否已配置
+            val aiConfigured = aiStateManager.state.value is AiState.Configured
+
+            val results: List<MediaItem> = if (aiConfigured) {
+                // ---- AI 路径：发送文字给 LLM 解析结构化条件，再本地过滤 ----
+                val parseResult = aiSearchRepository.parseQuery(
+                    query    = trimmed,
+                    nowMillis = System.currentTimeMillis()
+                )
+                if (parseResult.isSuccess) {
+                    val criteria = parseResult.getOrThrow()
+                    applySearchCriteria(allItems, criteria)
+                } else {
+                    // AI 解析失败，降级到本地模糊匹配
+                    localFuzzySearch(allItems, trimmed)
+                }
+            } else {
+                // ---- 离线路径：仅文件名 / 相册名模糊匹配 ----
+                localFuzzySearch(allItems, trimmed)
+            }
+
+            _searchState.value = if (results.isEmpty()) {
+                SearchUiState.Empty
+            } else {
+                SearchUiState.Success(results)
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // 搜索辅助：本地过滤
+    // ----------------------------------------------------------------
+
+    /**
+     * 将 AI 解析的结构化条件应用到媒体列表
+     *
+     * 同时满足以下所有条件的项才会被包含（各维度为 AND 关系）：
+     * - 媒体类型匹配
+     * - 拍摄/添加时间在 [dateFrom, dateTo] 范围内
+     * - 文件名包含至少一个 [filenameKeywords] 关键词（列表为空则不限制）
+     * - 相册名包含至少一个 [bucketNameKeywords] 关键词（列表为空则不限制）
+     *
+     * 注意：当关键词列表同时非空时，文件名与相册名为 OR 关系（任一命中即可）
+     */
+    private fun applySearchCriteria(
+        items: List<MediaItem>,
+        criteria: SearchCriteria
+    ): List<MediaItem> {
+        return items.filter { item ->
+            // 媒体类型过滤
+            val typeOk = when (criteria.mediaType) {
+                SearchMediaType.IMAGE -> item.mediaType == MediaType.IMAGE
+                SearchMediaType.VIDEO -> item.mediaType == MediaType.VIDEO
+                SearchMediaType.ALL   -> true
+            }
+
+            // 日期范围过滤（优先用 dateTaken，没有则用 dateAdded）
+            val itemTime = if (item.dateTaken > 0) item.dateTaken else item.dateAdded
+            val dateOk = (criteria.dateFrom == null || itemTime >= criteria.dateFrom) &&
+                         (criteria.dateTo   == null || itemTime <= criteria.dateTo)
+
+            // 关键词过滤：文件名 OR 相册名 各自匹配
+            val hasFilenameKw  = criteria.filenameKeywords.isNotEmpty()
+            val hasBucketKw    = criteria.bucketNameKeywords.isNotEmpty()
+            val keywordOk = when {
+                !hasFilenameKw && !hasBucketKw -> true   // 无关键词限制
+                hasFilenameKw && hasBucketKw   ->
+                    criteria.filenameKeywords.any { kw ->
+                        item.name.contains(kw, ignoreCase = true)
+                    } || criteria.bucketNameKeywords.any { kw ->
+                        item.bucketName.contains(kw, ignoreCase = true)
+                    }
+                hasFilenameKw -> criteria.filenameKeywords.any { kw ->
+                    item.name.contains(kw, ignoreCase = true)
+                }
+                else -> criteria.bucketNameKeywords.any { kw ->
+                    item.bucketName.contains(kw, ignoreCase = true)
+                }
+            }
+
+            typeOk && dateOk && keywordOk
+        }
+    }
+
+    /**
+     * 纯本地模糊匹配（AI 未配置或 AI 解析失败时的 fallback）
+     *
+     * 规则：文件名 OR 相册名 包含查询文字（忽略大小写）即命中
+     */
+    private fun localFuzzySearch(
+        items: List<MediaItem>,
+        query: String
+    ): List<MediaItem> = items.filter { item ->
+        item.name.contains(query, ignoreCase = true) ||
+        item.bucketName.contains(query, ignoreCase = true)
+    }
+
+    // ----------------------------------------------------------------
+    // 搜索 UI 状态（密封接口）
+    // ----------------------------------------------------------------
+
+    sealed interface SearchUiState {
+        /** 搜索未激活或已清空 */
+        data object Idle : SearchUiState
+        /** AI 正在解析查询文字 */
+        data object Loading : SearchUiState
+        /** 搜索完成，有结果 */
+        data class Success(val results: List<MediaItem>) : SearchUiState
+        /** 搜索完成，无结果 */
+        data object Empty : SearchUiState
     }
 
     /** 将 "2024-12" 格式化为 "2024年12月" */

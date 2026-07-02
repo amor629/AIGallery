@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -64,6 +65,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -79,11 +81,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -100,7 +105,10 @@ import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.domain.model.TimelineItem
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
+import com.example.aigallery.ui.gallery.GalleryViewModel.SearchUiState
 import java.util.Locale
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 
 // ============================================================
 // 所需权限（minSdk=34，直接用 Android 14 权限模型）
@@ -216,6 +224,13 @@ fun GalleryScreen(
     val deleteRequest by viewModel.deleteRequest.collectAsStateWithLifecycle()
     // ---- 分类筛选器 ----
     val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
+
+    // ---- 搜索状态 ----
+    val isSearchActive  by viewModel.isSearchActive.collectAsStateWithLifecycle()
+    val searchInput     by viewModel.searchInput.collectAsStateWithLifecycle()
+    val searchState     by viewModel.searchState.collectAsStateWithLifecycle()
+    // 搜索框自动聚焦器：激活搜索模式时自动弹出键盘
+    val searchFocusRequester = remember { FocusRequester() }
 
     // ---- 是否显示"确认删除"对话框（在系统弹窗之前的 App 内确认）----
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -349,32 +364,80 @@ fun GalleryScreen(
                     }
                 )
             } else {
-                // ---- 普通模式顶部栏 ----
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = "AI Gallery",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
+                // ---- 普通模式顶部栏 / 搜索模式顶部栏 ----
+                if (isSearchActive) {
+                    // 搜索模式：顶栏替换为搜索输入框
+                    TopAppBar(
+                        navigationIcon = {
+                            // 关闭搜索，退回普通模式
+                            IconButton(onClick = viewModel::deactivateSearch) {
+                                Icon(Icons.Default.Close, contentDescription = "关闭搜索")
+                            }
+                        },
+                        title = {
+                            // 搜索输入框（单行，自动聚焦，回车触发搜索）
+                            OutlinedTextField(
+                                value         = searchInput,
+                                onValueChange = viewModel::onSearchInputChanged,
+                                placeholder   = { Text("搜索相册…") },
+                                singleLine    = true,
+                                modifier      = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(searchFocusRequester),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(
+                                    onSearch = { viewModel.performSearch(searchInput) }
+                                ),
                             )
-                            if (uiState is GalleryUiState.Success) {
-                                val count = (uiState as GalleryUiState.Success).totalCount
-                                Text(
-                                    text = "共 ${"%,d".format(count)} 张",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        },
+                        actions = {
+                            // 点击搜索按钮提交查询
+                            IconButton(
+                                onClick  = { viewModel.performSearch(searchInput) },
+                                enabled  = searchInput.isNotBlank()
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = "搜索")
                             }
                         }
-                    },
-                    actions = {
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "设置")
-                        }
-                    },
-                    scrollBehavior = scrollBehavior
-                )
+                    )
+                    // 激活搜索模式后立即请求键盘焦点
+                    LaunchedEffect(isSearchActive) {
+                        if (isSearchActive) searchFocusRequester.requestFocus()
+                    }
+                } else {
+                    // ---- 普通模式顶部栏 ----
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    text = "AI Gallery",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (uiState is GalleryUiState.Success) {
+                                    val count = (uiState as GalleryUiState.Success).totalCount
+                                    Text(
+                                        text = "共 ${"%,d".format(count)} 张",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        },
+                        actions = {
+                            // 搜索按钮（仅在已有内容时可用）
+                            if (uiState is GalleryUiState.Success) {
+                                IconButton(onClick = viewModel::activateSearch) {
+                                    Icon(Icons.Default.Search, contentDescription = "搜索")
+                                }
+                            }
+                            IconButton(onClick = onNavigateToSettings) {
+                                Icon(Icons.Default.Settings, contentDescription = "设置")
+                            }
+                        },
+                        scrollBehavior = scrollBehavior
+                    )
+                }
             }
         },
         // ---- 多选模式底部操作栏 ----
@@ -556,31 +619,122 @@ fun GalleryScreen(
                             }
                         )
                     }
-                    // 分类筛选 Chip 行
-                    FilterChipRow(
-                        currentFilter    = currentFilter,
-                        onFilterSelected = viewModel::setFilter
-                    )
-                    // ✅ 正常状态：展示时间轴媒体网格
-                    MediaTimelineGrid(
-                        items = timelineItems,
-                        isSelecting = isSelecting,
-                        selectedUris = selectedUris,
-                        onItemClick = { media ->
-                            if (isSelecting) {
-                                // 多选模式：单击切换选中状态
-                                viewModel.toggleSelection(media.uri)
-                            } else {
-                                // 普通模式：进入详情页
-                                onNavigateToDetail(media)
+
+                    // 搜索激活时：隐藏 FilterChip，展示搜索结果
+                    if (isSearchActive) {
+                        // 搜索结果内容区
+                        when (val state = searchState) {
+                            is SearchUiState.Idle -> {
+                                // 已进入搜索模式但尚未提交查询：显示提示文字
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "输入关键词，\n按回车或点击搜索",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
-                        },
-                        onItemLongClick = { media ->
-                            // 长按：进入多选模式，同时选中此项
-                            viewModel.enterSelectionMode(media.uri)
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
+                            is SearchUiState.Loading -> {
+                                // AI 正在解析查询中
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        CircularProgressIndicator()
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text = "AI 正在理解您的查询…",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                            is SearchUiState.Success -> {
+                                // 有搜索结果：展示扁平媒体网格（无时间轴分组）
+                                val results = state.results
+                                Text(
+                                    text = "共找到 ${results.size} 个结果",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                )
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(3),
+                                    contentPadding = PaddingValues(1.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(results.size) { index ->
+                                        val item = results[index]
+                                        MediaThumbnailItem(
+                                            media       = item,
+                                            isSelecting = false,
+                                            isSelected  = false,
+                                            onClick     = { onNavigateToDetail(item) },
+                                            onLongClick = {}
+                                        )
+                                    }
+                                }
+                            }
+                            is SearchUiState.Empty -> {
+                                // 无搜索结果
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            imageVector  = Icons.Default.Search,
+                                            contentDescription = null,
+                                            modifier     = Modifier.size(64.dp),
+                                            tint         = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Text(
+                                            text  = "没有找到相关内容",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // 正常模式：分类筛选 Chip + 时间轴网格
+                        FilterChipRow(
+                            currentFilter    = currentFilter,
+                            onFilterSelected = viewModel::setFilter
+                        )
+                        // ✅ 正常状态：展示时间轴媒体网格
+                        MediaTimelineGrid(
+                            items = timelineItems,
+                            isSelecting = isSelecting,
+                            selectedUris = selectedUris,
+                            onItemClick = { media ->
+                                if (isSelecting) {
+                                    // 多选模式：单击切换选中状态
+                                    viewModel.toggleSelection(media.uri)
+                                } else {
+                                    // 普通模式：进入详情页
+                                    onNavigateToDetail(media)
+                                }
+                            },
+                            onItemLongClick = { media ->
+                                // 长按：进入多选模式，同时选中此项
+                                viewModel.enterSelectionMode(media.uri)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }

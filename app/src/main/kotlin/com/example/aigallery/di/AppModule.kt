@@ -3,11 +3,13 @@ package com.example.aigallery.di
 import com.example.aigallery.ai.AiApiClient
 import com.example.aigallery.data.ai.AiChatService
 import com.example.aigallery.data.ai.AiImageRepositoryImpl
+import com.example.aigallery.data.ai.AiSearchRepositoryImpl
 import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
 import com.example.aigallery.data.preferences.ThemePreferencesRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
 import com.example.aigallery.domain.repository.IAiImageRepository
+import com.example.aigallery.domain.repository.IAiSearchRepository
 import com.example.aigallery.domain.repository.IMediaRepository
 import com.example.aigallery.domain.repository.IThemeRepository
 import com.google.gson.Gson
@@ -76,6 +78,16 @@ abstract class AppModule {
     abstract fun bindThemeRepository(
         impl: ThemePreferencesRepository
     ): IThemeRepository
+
+    /**
+     * 将接口 IAiSearchRepository 绑定到 AiSearchRepositoryImpl
+     * GalleryViewModel 通过此接口调用 AI 自然语言检索解析
+     */
+    @Binds
+    @Singleton
+    abstract fun bindAiSearchRepository(
+        impl: AiSearchRepositoryImpl
+    ): IAiSearchRepository
 
     companion object {
 

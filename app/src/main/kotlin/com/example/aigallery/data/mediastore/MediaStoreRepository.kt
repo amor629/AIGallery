@@ -42,12 +42,8 @@ class MediaStoreRepository @Inject constructor(
     // 查询投影（只要元数据，不要像素）
     // ============================================================
 
-    /**
-     * 图片基础投影（不含厂商扩展列）
-     *
-     * 仅包含 AOSP 标准列，作为 AOSP 设备的兜底投影以及视频查询的基础。
-     */
-    private val imageProjectionAOSP = arrayOf(
+    /** 图片查询投影（仅 AOSP 标准列） */
+    private val imageProjection = arrayOf(
         MediaStore.MediaColumns._ID,
         MediaStore.MediaColumns.DISPLAY_NAME,
         MediaStore.MediaColumns.DATE_ADDED,      // 单位：秒
@@ -60,18 +56,8 @@ class MediaStoreRepository @Inject constructor(
         MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
     )
 
-    /**
-     * 图片完整投影：含 is_motion_photo 实况照片列
-     *
-     * 荣耀（MagicOS）、华为（HarmonyOS）、Samsung 等厂商在 MediaStore 中扩展了
-     * is_motion_photo 私有列（值为 1 表示该图片是单文件内嵌式实况照片）。
-     * AOSP 设备（Pixel 原生、AOSP GSI 等）不支持此列；safeQueryImages() 会在
-     * 查询抛出 SQLiteException 时自动回退到 imageProjectionAOSP。
-     */
-    private val imageProjection = imageProjectionAOSP + arrayOf("is_motion_photo")
-
-    /** 视频查询列（AOSP 标准列 + DURATION，不含 is_motion_photo） */
-    private val videoProjection = imageProjectionAOSP + arrayOf(
+    /** 视频查询投影（图片列 + DURATION） */
+    private val videoProjection = imageProjection + arrayOf(
         MediaStore.Video.VideoColumns.DURATION   // 单位：毫秒
     )
 
