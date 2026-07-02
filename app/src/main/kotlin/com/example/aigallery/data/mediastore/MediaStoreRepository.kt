@@ -54,7 +54,7 @@ class MediaStoreRepository @Inject constructor(
         MediaStore.MediaColumns.SIZE,
         MediaStore.MediaColumns.BUCKET_ID,
         MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-        MediaStore.Images.Media.IS_MOTION_PHOTO, // 实况照片标志（API 29+，minSdk=34 直接可用）
+        "is_motion_photo",               // 实况照片标志（Samsung 私有列，非标准 AOSP API；其他设备返回 -1 自动降级）
     )
 
     /** 视频查询列（在图片列基础上增加 DURATION） */
@@ -261,7 +261,7 @@ class MediaStoreRepository @Inject constructor(
             val colDuration    = if (mediaType == MediaType.VIDEO)
                 cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION) else -1
             val colIsMotionPhoto = if (mediaType == MediaType.IMAGE)
-                cursor.getColumnIndex(MediaStore.Images.Media.IS_MOTION_PHOTO) else -1
+                cursor.getColumnIndex("is_motion_photo") else -1
 
             // ---- 逐行读取 Cursor ----
             while (cursor.moveToNext()) {
