@@ -406,7 +406,8 @@ class AiSearchRepositoryImpl @Inject constructor(
 
     private fun parseTagArray(text: String, encodedIndices: List<Int>, mediaItems: List<MediaItem>): List<PhotoTagResult> {
         return try {
-            val arrayStr = Regex("\\[[\\s\\S]*?\\]").find(text.trim())?.value ?: return emptyList()
+            val s = text.indexOf("["); val e = text.lastIndexOf("]")
+            val arrayStr = if (s != -1 && e > s) text.substring(s, e + 1) else return emptyList()
             val arr = JsonParser.parseString(arrayStr).asJsonArray
             arr.mapNotNull { elem ->
                 val obj  = runCatching { elem.asJsonObject }.getOrNull() ?: return@mapNotNull null

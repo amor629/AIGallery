@@ -1,4 +1,4 @@
-package com.example.aigallery.ui.albums
+﻿package com.example.aigallery.ui.albums
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -7,11 +7,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -21,12 +25,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -45,6 +54,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.example.aigallery.data.local.db.TagAlbumRow
+import com.example.aigallery.ui.smart.SmartAlbumsViewModel
+import com.example.aigallery.ui.smart.SmartAlbumsScanState
 import com.example.aigallery.domain.model.MediaItem
 
 /**
@@ -64,8 +75,8 @@ fun SmartAlbumsScreen(
     val tagAlbums   by viewModel.tagAlbums.collectAsStateWithLifecycle()
     val selectedTag by viewModel.selectedTag.collectAsStateWithLifecycle()
     val photos      by viewModel.photosForTag.collectAsStateWithLifecycle()
+    val scanState   by viewModel.scanState.collectAsStateWithLifecycle()
 
-    // 选中标签时，返回键先退回标签列表，而不是退出页面
     BackHandler(enabled = selectedTag != null) { viewModel.clearTag() }
 
     Scaffold(
@@ -79,24 +90,35 @@ fun SmartAlbumsScreen(
                     }
                 },
                 title = {
-                    Text(
-                        text = selectedTag ?: "智能相册",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Text(text = selectedTag ?: "智能相册", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                },
+                actions = {
+                    if (selectedTag == null && scanState !is SmartAlbumsScanState.Scanning) {
+                        IconButton(onClick = viewModel::startScan) {
+                            Icon(Icons.Default.Refresh, contentDescription = "重新扫描")
+                        }
+                    }
                 }
             )
         }
     ) { paddingValues ->
         Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             if (selectedTag == null) {
-                // 标签列表首页
-                TagAlbumGrid(
-                    albums    = tagAlbums,
-                    onTagClick = viewModel::selectTag
-                )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // 扫描进度条（扫描中或出错时显示）
+                    when (val state = scanState) {
+                        is SmartAlbumsScanState.Scanning -> ScanningBanner()
+                        is SmartAlbumsScanState.Error    -> ErrorBanner(state.message, viewModel::startScan)
+                        else -> {}
+                    }
+                    TagAlbumGrid(
+                        albums      = tagAlbums,
+                        scanState   = scanState,
+                        onTagClick  = viewModel::selectTag,
+                        onStartScan = viewModel::startScan
+                    )
+                }
             } else {
-                // 单个标签下的照片网格
                 PhotoGrid(photos = photos, onPhotoClick = onNavigateToDetail)
             }
         }
@@ -110,33 +132,43 @@ fun SmartAlbumsScreen(
 @Composable
 private fun TagAlbumGrid(
     albums: List<TagAlbumRow>,
-    onTagClick: (String) -> Unit
+    scanState: SmartAlbumsScanState,
+    onTagClick: (String) -> Unit,
+    onStartScan: () -> Unit
 ) {
-    if (albums.isEmpty()) {
-        // 空状态
+    if (albums.isEmpty() && scanState !is SmartAlbumsScanState.Scanning) {
+        // 空状态：根据扫描状态显示不同提示
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
                 Icon(
                     Icons.Default.AutoAwesome,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(64.dp)
                 )
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "暂无标签相册",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp)
+                    text = "暂无智能相册",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "请在设置页开启「AI 自动打标」",
+                    text = "点击下方按钮，AI 将自动识别照片场景并分类",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(20.dp))
+                Button(onClick = onStartScan) {
+                    Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("开始 AI 扫描分类")
+                }
             }
         }
         return
     }
+    if (albums.isEmpty()) return  // 扫描中且尚无结果，内容由 ScanningBanner 覆盖
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -202,6 +234,45 @@ private fun TagAlbumCard(album: TagAlbumRow, onClick: () -> Unit) {
 }
 
 // =====================================================================
+// 扫描进度 Banner 和错误 Banner
+// =====================================================================
+
+@Composable
+private fun ScanningBanner() {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(text = "AI 正在后台分析照片场景…", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String, onRetry: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(text = message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = onRetry) { Text("重试") }
+        }
+    }
+}
+
+// =====================================================================
 // 单标签照片网格
 // =====================================================================
 
@@ -249,3 +320,5 @@ private fun PhotoGrid(
         }
     }
 }
+
+

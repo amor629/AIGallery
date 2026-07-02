@@ -25,6 +25,12 @@ val keystoreProps: Properties? = if (keystorePropertiesFile.exists()) {
     Properties().apply { load(FileInputStream(keystorePropertiesFile)) }
 } else null
 
+// KSP 编译参数：修复 Hilt + Room + KSP 2.x 多轮处理导致的 FileAlreadyExistsException
+ksp {
+    arg("dagger.fastInit", "enabled")
+    arg("dagger.hilt.android.internal.disableAndroidSuperclassValidation", "true")
+}
+
 android {
     // 包名，也是 Play Store 的唯一标识，发布前可改为你自己的包名
     namespace = "com.example.aigallery"
