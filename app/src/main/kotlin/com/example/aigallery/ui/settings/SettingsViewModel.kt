@@ -2,12 +2,20 @@ package com.example.aigallery.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.ai.AiStateManager
 import com.example.aigallery.domain.model.AiConfig
 import com.example.aigallery.domain.model.AppTheme
 import com.example.aigallery.domain.repository.IAiConfigRepository
+import com.example.aigallery.domain.repository.IAppPreferencesRepository
+import com.example.aigallery.domain.repository.ITagRepository
 import com.example.aigallery.domain.repository.IThemeRepository
+import com.example.aigallery.work.PhotoTagWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,7 +48,9 @@ data class SettingsUiState(
     val apiKeyInput: String = "",
     val isSaving: Boolean = false,
     val isTesting: Boolean = false,
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+    val autoTagEnabled: Boolean = false,   // AI 自动打标开关
+    val taggedPhotoCount: Int = 0          // 已打标照片数量（进度提示）
 )
 
 // ============================================================
@@ -62,7 +72,10 @@ data class SettingsUiState(
 class SettingsViewModel @Inject constructor(
     private val repository: IAiConfigRepository,
     private val aiStateManager: AiStateManager,
-    private val themeRepository: IThemeRepository
+    private val themeRepository: IThemeRepository,
+    private val appPrefs: IAppPreferencesRepository,
+    private val tagRepository: ITagRepository,
+    private val workManager: WorkManager
 ) : ViewModel() {
 
     // ---- 内部可变状态（仅 ViewModel 内部修改）----
@@ -73,13 +86,20 @@ class SettingsViewModel @Inject constructor(
         )
     )
 
-    // ---- 对外暴露的 UI 状态：合并输入状态 + AI 全局状态 + 主题 ----
+    // ---- 对外暴露的 UI 状态：合并输入状态 + AI 全局状态 + 主题 + 自动打标 ----
     val uiState: StateFlow<SettingsUiState> = combine(
         _inputState,
         aiStateManager.state,
-        themeRepository.themeFlow
-    ) { inputState, aiState, theme ->
-        inputState.copy(aiState = aiState, currentTheme = theme)
+        themeRepository.themeFlow,
+        appPrefs.autoTagEnabled,
+        tagRepository.getTaggedPhotoCount()
+    ) { inputState, aiState, theme, autoTag, tagCount ->
+        inputState.copy(
+            aiState = aiState,
+            currentTheme = theme,
+            autoTagEnabled = autoTag,
+            taggedPhotoCount = tagCount
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -212,6 +232,39 @@ class SettingsViewModel @Inject constructor(
     fun setTheme(theme: AppTheme) {
         viewModelScope.launch {
             themeRepository.saveTheme(theme)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // AI 自动打标开关
+    // ----------------------------------------------------------------
+
+    /**
+     * 开启/关闭 AI 自动打标
+     * - 开启：将偏好持久化，并调度 WorkManager 后台任务
+     * - 关闭：取消待执行的打标任务
+     */
+    fun setAutoTagEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appPrefs.setAutoTagEnabled(enabled)
+            if (enabled) {
+                val request = OneTimeWorkRequestBuilder<PhotoTagWorker>()
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .build()
+                    )
+                    .build()
+                workManager.enqueueUniqueWork(
+                    PhotoTagWorker.WORK_NAME,
+                    ExistingWorkPolicy.KEEP,
+                    request
+                )
+                _inputState.update { it.copy(snackbarMessage = "AI 打标任务已启动，后台运行中…") }
+            } else {
+                workManager.cancelUniqueWork(PhotoTagWorker.WORK_NAME)
+                _inputState.update { it.copy(snackbarMessage = "AI 自动打标已关闭") }
+            }
         }
     }
 }

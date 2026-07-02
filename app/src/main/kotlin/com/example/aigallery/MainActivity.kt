@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.aigallery.domain.model.AppTheme
 import com.example.aigallery.ui.MainViewModel
+import com.example.aigallery.ui.albums.SmartAlbumsScreen
 import com.example.aigallery.ui.detail.PhotoDetailScreen
 import com.example.aigallery.ui.gallery.GalleryScreen
 import com.example.aigallery.ui.gallery.GalleryViewModel
@@ -94,8 +95,9 @@ class MainActivity : ComponentActivity() {
                             LocalAnimatedVisibilityScope provides animScope
                         ) {
                         GalleryScreen(
-                            onNavigateToSettings = { navController.navigate("settings") },
-                            onNavigateToWaste    = { navController.navigate("waste") },
+                            onNavigateToSettings  = { navController.navigate("settings") },
+                            onNavigateToWaste     = { navController.navigate("waste") },
+                            onNavigateToSmartAlbums = { navController.navigate("smart_albums") },
                             onNavigateToDetail = { mediaItem ->
                                 // 将 content URI 编码后作为查询参数，避免路径分隔符冲突
                                 val encodedUri = URLEncoder.encode(
@@ -158,6 +160,24 @@ class MainActivity : ComponentActivity() {
                     composable("waste") {
                         WasteCleanupScreen(
                             onNavigateBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    // ---- 智能相册（AI 打标分类）----
+                    composable("smart_albums") {
+                        SmartAlbumsScreen(
+                            onNavigateBack = { navController.popBackStack() },
+                            onNavigateToDetail = { mediaItem ->
+                                val encodedUri = java.net.URLEncoder.encode(
+                                    mediaItem.uri.toString(),
+                                    java.nio.charset.StandardCharsets.UTF_8.name()
+                                )
+                                val encodedName = java.net.URLEncoder.encode(
+                                    mediaItem.name,
+                                    java.nio.charset.StandardCharsets.UTF_8.name()
+                                )
+                                navController.navigate("detail?uri=$encodedUri&name=$encodedName&type=${mediaItem.mediaType.name}")
+                            }
                         )
                     }
                 }

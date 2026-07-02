@@ -30,6 +30,7 @@ import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.example.aigallery.domain.model.WastePhoto
+import com.example.aigallery.domain.model.PhotoTagResult
 
 /**
  * AI 自然语言检�?+ 视觉内容搜索 Repository 实现（Data 层）
@@ -355,6 +356,66 @@ class AiSearchRepositoryImpl @Inject constructor(
                 val reason = obj.get("reason")?.asString?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 val mi = if (idx in encodedIndices.indices) encodedIndices[idx] else return@mapNotNull null
                 if (mi in mediaItems.indices) WastePhoto(mediaItems[mi], reason) else null
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    // ============================================================
+    // tagPhotoBatch：场景标签批量标注
+    // ============================================================
+
+    override suspend fun tagPhotoBatch(mediaItems: List<MediaItem>): List<PhotoTagResult> =
+        withContext(Dispatchers.IO) {
+        try {
+            val endpoint = aiApiClient.requireBaseUrl().trimEnd('/') + "/chat/completions"
+            val contentParts   = mutableListOf<AiContentPart>()
+            val encodedIndices = mutableListOf<Int>()
+
+            for (i in mediaItems.indices) {
+                val b64 = encodeImageToBase64(mediaItems[i].uri, MAX_WASTE_DIM) ?: continue
+                contentParts.add(AiContentPart(type = "image_url", imageUrl = AiImageUrl("data:image/jpeg;base64,$b64")))
+                encodedIndices.add(i)
+            }
+            if (contentParts.isEmpty()) return@withContext emptyList()
+
+            val n = contentParts.size
+            contentParts.add(AiContentPart(
+                type = "text",
+                text = "以下 $n 张图片按编号 0~${n - 1} 排列。\n" +
+                       "为每张图片各生成 1~2 个中文场景标签，从以下参考类别中选择或自定义：\n" +
+                       "人像、风景、建筑、美食、宠物、植物、夜景、旅行、海滩、室内、运动、日常\n" +
+                       "返回 JSON 数组：[{\"index\":0,\"tags\":[\"美食\"]},{\"index\":1,\"tags\":[\"风景\",\"海滩\"]}]\n" +
+                       "只输出 JSON，不要解释。"
+            ))
+            val systemMsg = AiMessage(role = "system", content = listOf(AiContentPart(type = "text",
+                text = "你是场景标签助手，为照片生成简洁的中文场景标签。")))
+
+            val response = aiChatService.chatCompletion(endpoint,
+                AiChatRequest(model = MODEL_VISUAL, maxTokens = 256,
+                    messages = listOf(systemMsg, AiMessage(role = "user", content = contentParts))))
+            val content = response.choices?.firstOrNull()?.message?.content
+                ?: return@withContext emptyList()
+
+            parseTagArray(content, encodedIndices, mediaItems)
+        } catch (e: AiApiClient.AiNotConfiguredException) { emptyList() }
+          catch (e: Exception) {
+              android.util.Log.w("AiTagging", "打标失败: ${e.message}")
+              emptyList()
+          }
+    }
+
+    private fun parseTagArray(text: String, encodedIndices: List<Int>, mediaItems: List<MediaItem>): List<PhotoTagResult> {
+        return try {
+            val arrayStr = Regex("\\[[\\s\\S]*?\\]").find(text.trim())?.value ?: return emptyList()
+            val arr = JsonParser.parseString(arrayStr).asJsonArray
+            arr.mapNotNull { elem ->
+                val obj  = runCatching { elem.asJsonObject }.getOrNull() ?: return@mapNotNull null
+                val idx  = obj.get("index")?.asInt ?: return@mapNotNull null
+                val tags = obj.getAsJsonArray("tags")?.mapNotNull { it.asString.takeIf { s -> s.isNotBlank() } }
+                    ?: return@mapNotNull null
+                val mi = if (idx in encodedIndices.indices) encodedIndices[idx] else return@mapNotNull null
+                if (mi in mediaItems.indices && tags.isNotEmpty()) PhotoTagResult(mediaItems[mi].uri.toString(), tags)
+                else null
             }
         } catch (e: Exception) { emptyList() }
     }

@@ -1,16 +1,25 @@
 package com.example.aigallery.di
 
+import android.content.Context
+import androidx.room.Room
+import androidx.work.WorkManager
 import com.example.aigallery.ai.AiApiClient
 import com.example.aigallery.data.ai.AiChatService
 import com.example.aigallery.data.ai.AiImageRepositoryImpl
 import com.example.aigallery.data.ai.AiSearchRepositoryImpl
+import com.example.aigallery.data.local.db.AppDatabase
+import com.example.aigallery.data.local.db.PhotoTagDao
+import com.example.aigallery.data.local.tag.TagRepositoryImpl
 import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
+import com.example.aigallery.data.preferences.AppPreferencesRepositoryImpl
 import com.example.aigallery.data.preferences.ThemePreferencesRepository
+import com.example.aigallery.domain.repository.IAppPreferencesRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
 import com.example.aigallery.domain.repository.IAiImageRepository
 import com.example.aigallery.domain.repository.IAiSearchRepository
 import com.example.aigallery.domain.repository.IMediaRepository
+import com.example.aigallery.domain.repository.ITagRepository
 import com.example.aigallery.domain.repository.IThemeRepository
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
@@ -18,6 +27,7 @@ import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -89,6 +99,18 @@ abstract class AppModule {
         impl: AiSearchRepositoryImpl
     ): IAiSearchRepository
 
+    @Binds
+    @Singleton
+    abstract fun bindTagRepository(
+        impl: TagRepositoryImpl
+    ): ITagRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindAppPreferencesRepository(
+        impl: AppPreferencesRepositoryImpl
+    ): IAppPreferencesRepository
+
     companion object {
 
         /**
@@ -140,5 +162,24 @@ abstract class AppModule {
         @Singleton
         fun provideAiChatService(retrofit: Retrofit): AiChatService =
             retrofit.create(AiChatService::class.java)
+
+        /** Room 数据库（单例） */
+        @Provides
+        @Singleton
+        fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
+            Room.databaseBuilder(context, AppDatabase::class.java, "aigallery.db")
+                .fallbackToDestructiveMigration()
+                .build()
+
+        /** PhotoTag DAO（从数据库实例获取） */
+        @Provides
+        @Singleton
+        fun providePhotoTagDao(db: AppDatabase): PhotoTagDao = db.photoTagDao()
+
+        /** WorkManager 单例（供 SettingsViewModel 调度打标任务使用） */
+        @Provides
+        @Singleton
+        fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
+            WorkManager.getInstance(context)
     }
 }

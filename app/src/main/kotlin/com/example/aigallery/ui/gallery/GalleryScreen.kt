@@ -215,6 +215,7 @@ private fun isPartialMediaAccess(context: android.content.Context): Boolean =
 fun GalleryScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToWaste: () -> Unit = {},        // AI 废片清理入口
+    onNavigateToSmartAlbums: () -> Unit = {},  // 智能相册入口
     onNavigateToDetail: (MediaItem) -> Unit = {},  // 点击缩略图进入详情页
     viewModel: GalleryViewModel = hiltViewModel()
 ) {
@@ -538,6 +539,14 @@ fun GalleryScreen(
                                     Icons.Default.AutoAwesome,
                                     contentDescription = "AI 废片清理",
                                     tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            // 智能相册按钮
+                            IconButton(onClick = onNavigateToSmartAlbums) {
+                                Icon(
+                                    Icons.Default.PhotoLibrary,
+                                    contentDescription = "智能相册",
+                                    tint = MaterialTheme.colorScheme.secondary
                                 )
                             }
                             // 搜索按钮（仅在已有内容时可用）

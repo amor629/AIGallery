@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // app/build.gradle.kts — 应用模块构建配置
 // 核心依赖全部在此声明，版本号统一由 gradle/libs.versions.toml 管理
 // ============================================================
@@ -161,6 +161,8 @@ dependencies {
     implementation(libs.room.ktx)          // 协程扩展
     implementation(libs.room.paging)       // Paging 3 集成
     ksp(libs.room.compiler)                // 注解处理器（编译时生成 DAO 实现）
+    // ========== 后台任务 WorkManager ==========
+    implementation(libs.work.runtime.ktx)
 
     // ========== 本地配置 DataStore ==========
     // 存储用户偏好：主题、排序方式等

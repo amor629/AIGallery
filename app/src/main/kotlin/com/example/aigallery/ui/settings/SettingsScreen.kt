@@ -1,4 +1,4 @@
-package com.example.aigallery.ui.settings
+﻿package com.example.aigallery.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -60,6 +60,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.domain.model.AppTheme
+import androidx.compose.material3.Switch
+import androidx.compose.ui.text.font.FontWeight
 
 /**
  * 设置页主入口（Composable）
@@ -125,6 +127,13 @@ fun SettingsScreen(
             ThemeCard(
                 currentTheme = uiState.currentTheme,
                 onThemeSelected = viewModel::setTheme
+            )
+
+            // ---- AI 自动打标卡 ----
+            AutoTagCard(
+                enabled      = uiState.autoTagEnabled,
+                taggedCount  = uiState.taggedPhotoCount,
+                onToggle     = viewModel::setAutoTagEnabled
             )
 
             // ---- AI 配置表单 ----
@@ -411,6 +420,47 @@ private fun DashScopeQuickStartCard() {
  * @param currentTheme   当前生效的主题（从 ViewModel 读取）
  * @param onThemeSelected 用户选中新主题时的回调
  */
+// ============================================================
+// AI 自动打标开关卡片
+// ============================================================
+
+@Composable
+private fun AutoTagCard(
+    enabled: Boolean,
+    taggedCount: Int,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI 自动打标",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (enabled) "后台运行中，已标记 $taggedCount 张照片"
+                           else "开启后自动为照片生成场景标签",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle
+            )
+        }
+    }
+}
+
 @Composable
 private fun ThemeCard(
     currentTheme: AppTheme,

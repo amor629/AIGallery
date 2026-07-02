@@ -1,6 +1,7 @@
 ﻿package com.example.aigallery.domain.repository
 
 import com.example.aigallery.domain.model.MediaItem
+import com.example.aigallery.domain.model.PhotoTagResult
 import com.example.aigallery.domain.model.SearchCriteria
 import com.example.aigallery.domain.model.WastePhoto
 
@@ -26,4 +27,11 @@ interface IAiSearchRepository {
      * @return 废片列表，含图片元数据及废片原因；失败返回空列表
      */
     suspend fun analyzeWasteBatch(mediaItems: List<MediaItem>): List<WastePhoto>
+
+    /**
+     * 对一批图片进行场景标签标注
+     * @param mediaItems 待打标图片列表（建议 ≤3 张）
+     * @return 每张图片的 URI + 标签列表；失败返回空列表
+     */
+    suspend fun tagPhotoBatch(mediaItems: List<MediaItem>): List<PhotoTagResult>
 }
