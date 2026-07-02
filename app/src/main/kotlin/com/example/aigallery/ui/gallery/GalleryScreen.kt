@@ -110,6 +110,7 @@ import com.example.aigallery.ui.gallery.GalleryViewModel.SearchUiState
 import java.util.Locale
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.fillMaxHeight
 
 // ============================================================
 // 所需权限（minSdk=34，直接用 Android 14 权限模型）
@@ -660,6 +661,50 @@ fun GalleryScreen(
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                    }
+                                }
+                            }
+                            is SearchUiState.VisualSearching -> {
+                                // 视觉扫描进行中：顶部进度信息 + 下方实时结果
+                                val vs = state
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    // 进度横幅
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                        Spacer(modifier = Modifier.size(8.dp))
+                                        Text(
+                                            text = "正在识别图片内容 (${vs.scanned}/${vs.total})，" +
+                                                   "已找到 ${vs.found} 张",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    // 实时结果网格
+                                    if (vs.partialResults.isNotEmpty()) {
+                                        LazyVerticalGrid(
+                                            columns = GridCells.Fixed(3),
+                                            contentPadding = PaddingValues(1.dp),
+                                            modifier = Modifier.fillMaxHeight()
+                                        ) {
+                                            items(vs.partialResults.size) { index ->
+                                                val item = vs.partialResults[index]
+                                                MediaThumbnailItem(
+                                                    media       = item,
+                                                    isSelecting = false,
+                                                    isSelected  = false,
+                                                    onClick     = { onNavigateToDetail(item) },
+                                                    onLongClick = {}
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }

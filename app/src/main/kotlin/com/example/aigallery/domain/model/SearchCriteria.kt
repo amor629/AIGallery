@@ -34,6 +34,17 @@ data class SearchCriteria(
      * 例如：["Camera", "微信"] 或 ["Screenshots", "截图"]
      */
     val bucketNameKeywords: List<String> = emptyList(),
+
+    /**
+     * 视觉内容查询词（非 null 表示需要调用视觉 AI 识别图片内容）
+     *
+     * 示例："猫和狗"、"海边日落"、"生日年会"
+     *
+     * 此字段由 LLM 解析登入：
+     * - 查询的是物体/场景/人物/活动（视觉内容）→ 填充
+     * - 查询的是时间/类型/文件夹等元数据，且能被其他字段覆盖 → null
+     */
+    val visualQuery: String? = null,
 )
 
 /**

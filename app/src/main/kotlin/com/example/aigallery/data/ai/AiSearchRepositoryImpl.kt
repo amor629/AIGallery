@@ -1,223 +1,218 @@
-package com.example.aigallery.data.ai
+﻿package com.example.aigallery.data.ai
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
 import com.example.aigallery.ai.AiApiClient
 import com.example.aigallery.data.ai.dto.AiChatRequest
 import com.example.aigallery.data.ai.dto.AiContentPart
+import com.example.aigallery.data.ai.dto.AiImageUrl
 import com.example.aigallery.data.ai.dto.AiMessage
+import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.SearchCriteria
 import com.example.aigallery.domain.model.SearchMediaType
 import com.example.aigallery.domain.repository.IAiSearchRepository
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import retrofit2.HttpException
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.Calendar
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * AI 自然语言检索解析 Repository 实现（Data 层）
+ * AI 自然语言检�?+ 视觉内容搜索 Repository 实现（Data 层）
  *
- * 流程：
- * 1. 检查 AI 是否已配置（未配置直接返回 Failure）
- * 2. 将当前时间 + 用户查询文本打包为 Prompt 发给 LLM
- * 3. LLM 返回 JSON 格式的结构化检索条件
- * 4. 解析 JSON → [SearchCriteria]
+ * 两大功能�?
+ * 1. [parseQuery]：发送文本查询给 LLM �?解析为结构化 [SearchCriteria]（含 visualQuery�?
+ * 2. [visualSearchBatch]：将图片批量发送给视觉 AI �?返回命中图片的下�?
  *
- * ⚠️ 隐私安全：
- * - 仅发送文字（当前时间 + 用户查询），绝对不上传任何图片
- * - 所有实际的媒体过滤在设备本地完成
- *
- * ⚠️ 异常处理：
- * - 所有异常在此类内部捕获并转换为 [Result.failure]，不向外抛出
+ * ⚠️ 安全约束�?
+ * - API Key �?[AiApiClient] 拦截器注入，此类不直接接�?Key
+ * - 所有异常在内部捕获，不向上传播
  */
 @Singleton
 class AiSearchRepositoryImpl @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val aiApiClient: AiApiClient,
     private val aiChatService: AiChatService,
     private val gson: Gson
 ) : IAiSearchRepository {
 
     companion object {
-        /** 用于搜索意图解析的文本模型（与图片识别共用同一配置的端点） */
-        private const val MODEL_NAME = "qwen-max"
-
-        /** AI 返回 JSON 的最大 Token 数（检索条件结构简单，256 已充足） */
-        private const val MAX_TOKENS = 256
+        private const val MODEL_TEXT   = "qwen-max"     // 文本意图解析
+        private const val MODEL_VISUAL = "qwen-vl-max"  // 图片内容识别
+        private const val MAX_TOKENS_TEXT   = 256
+        private const val MAX_TOKENS_VISUAL = 50        // 只需返回编号数组
+        private const val MAX_VISUAL_DIM    = 512       // 视觉搜索用较小缩略图
+        private const val JPEG_QUALITY      = 75
     }
 
-    // ----------------------------------------------------------------
-    // IAiSearchRepository 实现
-    // ----------------------------------------------------------------
+    // ============================================================
+    // parseQuery：文本查�?�?结构化检索条�?
+    // ============================================================
 
     override suspend fun parseQuery(query: String, nowMillis: Long): Result<SearchCriteria> {
         return withContext(Dispatchers.IO) {
             try {
-                // ① 检查 AI 配置
                 val baseUrl = try {
                     aiApiClient.requireBaseUrl()
                 } catch (e: AiApiClient.AiNotConfiguredException) {
                     return@withContext Result.failure(
-                        IllegalStateException("AI 未配置，请在设置页填写 API 地址和 Key")
+                        IllegalStateException("AI 未配置，请在设置页填�?API 地址�?Key")
                     )
                 }
-
-                // ② 构建包含当前时间的 Prompt
-                val prompt = buildPrompt(query, nowMillis)
-
-                // ③ 拼接端点 URL（与图片识别共用同一个 chat/completions 路径）
                 val endpoint = baseUrl.trimEnd('/') + "/chat/completions"
-
-                // ④ 构建纯文本请求（不含图片，保护用户隐私）
                 val request = AiChatRequest(
-                    model = MODEL_NAME,
-                    maxTokens = MAX_TOKENS,
+                    model = MODEL_TEXT,
+                    maxTokens = MAX_TOKENS_TEXT,
                     messages = listOf(
                         AiMessage(
                             role = "user",
-                            content = listOf(
-                                AiContentPart(type = "text", text = prompt)
-                            )
+                            content = listOf(AiContentPart(type = "text", text = buildTextPrompt(query, nowMillis)))
                         )
                     )
                 )
-
-                // ⑤ 发起网络请求
                 val response = aiChatService.chatCompletion(endpoint, request)
-
-                // ⑥ 解析响应
-                val content = response.choices?.firstOrNull()?.message?.content
-                    ?: return@withContext Result.failure(
-                        IOException("AI 返回了空响应，请重试")
-                    )
-
-                // ⑦ 从 AI 回答中提取 JSON 并转换为 SearchCriteria
-                val criteria = parseJsonToCriteria(content, nowMillis)
-                Result.success(criteria)
-
+                val content  = response.choices?.firstOrNull()?.message?.content
+                    ?: return@withContext Result.failure(IOException("AI 返回了空响应，请重试"))
+                Result.success(parseJsonToCriteria(content, nowMillis))
             } catch (e: HttpException) {
-                // HTTP 层错误（4xx / 5xx）
-                val msg = when (e.code()) {
+                Result.failure(IOException(when (e.code()) {
                     401  -> "API Key 无效或已过期，请在设置页重新配置"
                     429  -> "请求过于频繁，请稍后再试（限流）"
-                    else -> "服务器错误 (HTTP ${e.code()})，请稍后重试"
-                }
-                Result.failure(IOException(msg))
-            } catch (e: SocketTimeoutException) {
-                Result.failure(IOException("请求超时，请检查网络连接后重试"))
-            } catch (e: IOException) {
-                Result.failure(IOException("网络错误：${e.message}"))
-            } catch (e: Exception) {
-                Result.failure(IOException("未知错误：${e.message}"))
-            }
+                    else -> "服务器错�?(HTTP ${e.code()})，请稍后重试"
+                }))
+            } catch (e: SocketTimeoutException) { Result.failure(IOException("请求超时")) }
+              catch (e: IOException)             { Result.failure(e) }
+              catch (e: Exception)               { Result.failure(IOException(e.message)) }
         }
     }
 
-    // ----------------------------------------------------------------
-    // 私有：构建 Prompt
-    // ----------------------------------------------------------------
+    // ============================================================
+    // visualSearchBatch：批量图片视觉内容匹�?
+    // ============================================================
 
-    /**
-     * 构建发送给 LLM 的 Prompt
-     *
-     * 包含：
-     * - 当前精确时间（让 AI 能正确解析"昨天"、"上个月"等相对日期）
-     * - 用户查询文本
-     * - 严格 JSON 输出格式要求
-     *
-     * @param query      用户查询文本
-     * @param nowMillis  当前时间毫秒时间戳
-     */
-    private fun buildPrompt(query: String, nowMillis: Long): String {
-        val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
-        val nowStr = SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.CHINA)
-            .format(Date(nowMillis))
+    override suspend fun visualSearchBatch(
+        mediaItems: List<MediaItem>,
+        visualQuery: String,
+    ): List<Int> = withContext(Dispatchers.IO) {
+        try {
+            val endpoint = aiApiClient.requireBaseUrl().trimEnd('/') + "/chat/completions"
+
+            val contentParts   = mutableListOf<AiContentPart>()
+            val encodedIndices = mutableListOf<Int>()   // 记录哪些图片成功编码
+
+            // �?将每张图片编码为 Base64
+            for (i in mediaItems.indices) {
+                val b64 = encodeImageToBase64(mediaItems[i].uri) ?: continue
+                contentParts.add(
+                    AiContentPart(type = "image_url", imageUrl = AiImageUrl("data:image/jpeg;base64,$b64"))
+                )
+                encodedIndices.add(i)
+            }
+            if (contentParts.isEmpty()) return@withContext emptyList()
+
+            // �?附加问题文本（放在图片之后，部分多模态模型要求文本在最后）
+            val n = contentParts.size
+            contentParts.add(
+                AiContentPart(
+                    type = "text",
+                    text = "以上 $n 张图片按顺序编号 0 到 ${n - 1}，" +
+                           "哪些包含或与「$visualQuery」相关？" +
+                           "只回答命中编号，JSON 数组格式，例如 [0,2]；无匹配回答 []。不要解释。"
+                )
+            )
+
+            val response = aiChatService.chatCompletion(
+                endpoint,
+                AiChatRequest(model = MODEL_VISUAL, maxTokens = MAX_TOKENS_VISUAL,
+                    messages = listOf(AiMessage(role = "user", content = contentParts)))
+            )
+            val content = response.choices?.firstOrNull()?.message?.content
+                ?: return@withContext emptyList()
+
+            // �?解析 "[0, 2]" �?真实 MediaItem 下标
+            parseIndexArray(content).mapNotNull { pos ->
+                if (pos in encodedIndices.indices) encodedIndices[pos] else null
+            }
+
+        } catch (e: AiApiClient.AiNotConfiguredException) { emptyList() }
+          catch (e: Exception) {
+              android.util.Log.w("AiVisualSearch", "批次识别失败: ${e.message}")
+              emptyList()
+          }
+    }
+
+    // ============================================================
+    // 私有：构建文�?Prompt
+    // ============================================================
+
+    private fun buildTextPrompt(query: String, nowMillis: Long): String {
+        val cal   = Calendar.getInstance().apply { timeInMillis = nowMillis }
+        val nowStr = SimpleDateFormat("yyyy年MM月dd�?HH:mm", Locale.CHINA).format(Date(nowMillis))
         val year  = cal.get(Calendar.YEAR)
-        val month = cal.get(Calendar.MONTH) + 1  // Calendar.MONTH 从 0 开始
+        val month = cal.get(Calendar.MONTH) + 1
 
         return """
-你是一个手机相册搜索助手。当前时间是 $nowStr。
+你是一个手机相册搜索助手。当前时间是 $nowStr�?
 
-用户想搜索手机相册，查询内容是："$query"
+用户查询�?$query"
 
-请将该查询解析为以下 JSON 格式（只输出 JSON，不要任何解释或 Markdown 代码块）：
+解析为以�?JSON（只输出 JSON，不要任何解释或 Markdown 代码块）�?
 {
   "mediaType": "ALL",
   "dateFrom": null,
   "dateTo": null,
   "filenameKeywords": [],
-  "bucketNameKeywords": []
+  "bucketNameKeywords": [],
+  "visualQuery": null
 }
 
-字段说明：
-- mediaType: 字符串，只能是 "ALL"、"IMAGE"、"VIDEO" 之一
-  - 用户说"视频"、"录像"、"影片" → "VIDEO"
-  - 用户说"照片"、"图片"、"相片"、"截图" → "IMAGE"
-  - 未明确指定 → "ALL"
-- dateFrom / dateTo: 字符串（"YYYY-MM-DD"格式）或 null
-  - "今天" → dateFrom=今天0点, dateTo=今天23:59
-  - "昨天" → dateFrom=昨天0点, dateTo=昨天23:59
-  - "本月" / "这个月" → dateFrom=${year}年${month}月1日, dateTo=本月最后一天
-  - "上个月" → 上月1日到上月最后一天
-  - "今年" → ${year}-01-01 到 ${year}-12-31
-  - "去年" → ${year - 1}-01-01 到 ${year - 1}-12-31
-  - "YYYY年" → 该年1月1日到12月31日
-  - "YYYY年M月" → 该月第1天到最后一天
-  - 无时间信息 → null
-- filenameKeywords: 数组，可能出现在文件名中的关键词（英文优先）
-  - "截图" → ["Screenshot", "screenshot"]
-  - "相机" / "拍的" → ["IMG_", "PXL_", "DCIM"]
-  - 无关 → []
-- bucketNameKeywords: 数组，相册目录名关键词
-  - "截图" → ["Screenshots", "截图", "Screenshot"]
-  - "相机" / "拍的" → ["Camera", "DCIM"]
-  - "微信" → ["微信", "WeChat", "Tencent"]
-  - "下载" → ["Download", "下载"]
-  - 无关 → []
+字段说明�?
+- mediaType: "ALL" / "IMAGE" / "VIDEO"
+  "视频"/"录像" �?"VIDEO"�?照片"/"图片"/"截图" �?"IMAGE"；否�?�?"ALL"
+- dateFrom/dateTo: "YYYY-MM-DD" �?null
+  "今天" �?今日�?昨天" �?昨日�?本月" �?${year}-${month.toString().padStart(2,'0')}首尾�?
+  "上个�? �?上月�?今年" �?${year}首尾�?去年" �?${year - 1}首尾；无时间 �?null
+- filenameKeywords: 文件名关键词
+  "截图" �?["Screenshot"]�?相机拍的" �?["IMG_","PXL_"]；其�?�?[]
+- bucketNameKeywords: 相册目录名关键词
+  "截图" �?["Screenshots","截图"]�?相机" �?["Camera","DCIM"]�?
+  "微信" �?["微信","WeChat"]；其�?�?[]
+- visualQuery: 视觉内容描述词（�?null 则需要用视觉 AI 扫描图片内容�?
+  规则：查询描述的是图片中"看得�?的内容（物体/动物/人物/场景/活动�?�?提取简洁描�?
+  示例�?猫咪" �?"猫咪"�?海边日落" �?"海边日落"�?朋友聚餐" �?"朋友聚餐"
+  反例�?上个月的截图"（纯元数据）�?null�?视频" �?null
+  注意：如同时有时�?视觉内容�?2024年的�?）→ �?dateFrom/dateTo AND visualQuery="�?
 
-只输出纯 JSON，不要包含任何其他内容。
+只输出纯 JSON�?
         """.trimIndent()
     }
 
-    // ----------------------------------------------------------------
-    // 私有：解析 AI 返回的 JSON 为 SearchCriteria
-    // ----------------------------------------------------------------
+    // ============================================================
+    // 私有工具方法
+    // ============================================================
 
-    /**
-     * 从 AI 的文本回复中提取 JSON 并解析为 [SearchCriteria]
-     *
-     * 容错处理：
-     * - AI 可能在 JSON 外包裹 Markdown 代码块（```json ... ```），会先剥除
-     * - 日期字符串解析失败时跳过对应字段（不影响其他条件）
-     * - 任何 JSON 解析错误都 fallback 为空条件（全量显示）
-     *
-     * @param aiResponse  AI 返回的原始文本
-     * @param nowMillis   当前时间（用于补全无时区信息的日期）
-     */
     private fun parseJsonToCriteria(aiResponse: String, nowMillis: Long): SearchCriteria {
         return try {
-            // 剥除可能存在的 Markdown 代码块包装
-            val jsonStr = extractJson(aiResponse)
+            val obj: JsonObject = JsonParser.parseString(extractJson(aiResponse)).asJsonObject
 
-            val obj: JsonObject = JsonParser.parseString(jsonStr).asJsonObject
-
-            // 解析 mediaType
-            val mediaType = when (
-                obj.get("mediaType")?.asString?.uppercase()
-            ) {
+            val mediaType = when (obj.get("mediaType")?.asString?.uppercase()) {
                 "IMAGE" -> SearchMediaType.IMAGE
                 "VIDEO" -> SearchMediaType.VIDEO
                 else    -> SearchMediaType.ALL
             }
-
-            // 解析日期（"YYYY-MM-DD" → 毫秒时间戳）
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
             val dateFrom = obj.get("dateFrom")?.let { el ->
                 if (el.isJsonNull) null
@@ -225,55 +220,69 @@ class AiSearchRepositoryImpl @Inject constructor(
             }
             val dateTo = obj.get("dateTo")?.let { el ->
                 if (el.isJsonNull) null
-                else runCatching {
-                    // dateTo 表示当天结束（23:59:59），加上一天毫秒数后减 1ms
-                    sdf.parse(el.asString)?.let { it.time + 24 * 60 * 60 * 1000L - 1L }
-                }.getOrNull()
+                else runCatching { sdf.parse(el.asString)?.let { it.time + 86_400_000L - 1L } }.getOrNull()
+            }
+            val filenameKeywords   = obj.getAsJsonArray("filenameKeywords")
+                ?.mapNotNull { it.asString.takeIf(String::isNotBlank) } ?: emptyList()
+            val bucketNameKeywords = obj.getAsJsonArray("bucketNameKeywords")
+                ?.mapNotNull { it.asString.takeIf(String::isNotBlank) } ?: emptyList()
+            val visualQuery = obj.get("visualQuery")?.let { el ->
+                if (el.isJsonNull) null else el.asString.takeIf(String::isNotBlank)
             }
 
-            // 解析关键词数组
-            val filenameKeywords = obj.getAsJsonArray("filenameKeywords")
-                ?.mapNotNull { it.asString.takeIf { s -> s.isNotBlank() } }
-                ?: emptyList()
-
-            val bucketNameKeywords = obj.getAsJsonArray("bucketNameKeywords")
-                ?.mapNotNull { it.asString.takeIf { s -> s.isNotBlank() } }
-                ?: emptyList()
-
-            SearchCriteria(
-                mediaType          = mediaType,
-                dateFrom           = dateFrom,
-                dateTo             = dateTo,
-                filenameKeywords   = filenameKeywords,
-                bucketNameKeywords = bucketNameKeywords,
-            )
+            SearchCriteria(mediaType, dateFrom, dateTo, filenameKeywords, bucketNameKeywords, visualQuery)
         } catch (e: Exception) {
-            // JSON 解析失败：返回空条件（等价于全量匹配，不崩溃）
-            android.util.Log.w("AiSearch", "JSON 解析失败，降级为空条件: ${e.message}")
+            android.util.Log.w("AiSearch", "JSON 解析失败，降级为空条�? ${e.message}")
             SearchCriteria()
         }
     }
 
-    /**
-     * 从可能含 Markdown 代码块的字符串中提取纯 JSON
-     *
-     * 支持以下格式：
-     * - 直接 JSON：`{ ... }`
-     * - Markdown 代码块：` ```json\n{ ... }\n``` `
-     */
+    private fun parseIndexArray(text: String): List<Int> = try {
+        val inner = Regex("\\[([^]]*)]").find(text.trim())?.groupValues?.get(1) ?: return emptyList()
+        if (inner.isBlank()) emptyList()
+        else inner.split(",").mapNotNull { it.trim().toIntOrNull() }
+    } catch (e: Exception) { emptyList() }
+
     private fun extractJson(text: String): String {
-        // 先尝试剥除 ```json ... ``` 或 ``` ... ``` 包装
-        val codeBlockRegex = Regex("```(?:json)?\\s*([\\s\\S]*?)```")
-        val match = codeBlockRegex.find(text.trim())
-        if (match != null) return match.groupValues[1].trim()
+        Regex("```(?:json)?\\s*([\\s\\S]*?)```").find(text.trim())?.let { return it.groupValues[1].trim() }
+        val s = text.indexOf('{'); val e = text.lastIndexOf('}')
+        return if (s != -1 && e > s) text.substring(s, e + 1) else text.trim()
+    }
 
-        // 如果没有代码块，尝试提取第一个 { ... } 块
-        val braceStart = text.indexOf('{')
-        val braceEnd   = text.lastIndexOf('}')
-        if (braceStart != -1 && braceEnd > braceStart) {
-            return text.substring(braceStart, braceEnd + 1)
-        }
-
-        return text.trim()
+    /** 将图�?URI 读取、等比缩�?MAX_VISUAL_DIM px，返�?JPEG Base64 �?null */
+    private fun encodeImageToBase64(uri: android.net.Uri): String? = try {
+        val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+        val original = BitmapFactory.decodeStream(inputStream).also { inputStream.close() }
+        val scale = minOf(MAX_VISUAL_DIM.toFloat() / original.width,
+                          MAX_VISUAL_DIM.toFloat() / original.height, 1f)
+        val scaled = if (scale < 1f)
+            Bitmap.createScaledBitmap(original, (original.width * scale).toInt(), (original.height * scale).toInt(), true)
+        else original
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+        if (scaled !== original) scaled.recycle()
+        original.recycle()
+        Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    } catch (e: Exception) {
+        android.util.Log.w("AiVisualSearch", "图片编码失败 $uri: ${e.message}")
+        null
     }
 }
+
+
+/**
+ * AI 自然语言检索解�?Repository 实现（Data 层）
+ *
+ * 流程�?
+ * 1. 检�?AI 是否已配置（未配置直接返�?Failure�?
+ * 2. 将当前时�?+ 用户查询文本打包�?Prompt 发给 LLM
+ * 3. LLM 返回 JSON 格式的结构化检索条�?
+ * 4. 解析 JSON �?[SearchCriteria]
+ *
+ * ⚠️ 隐私安全�?
+ * - 仅发送文字（当前时间 + 用户查询），绝对不上传任何图�?
+ * - 所有实际的媒体过滤在设备本地完�?
+ *
+ * ⚠️ 异常处理�?
+ * - 所有异常在此类内部捕获并转换为 [Result.failure]，不向外抛出
+ */

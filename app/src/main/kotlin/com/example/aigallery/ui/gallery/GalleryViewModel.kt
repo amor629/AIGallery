@@ -518,35 +518,74 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch {
             _searchState.value = SearchUiState.Loading
 
-            // 取全量未筛选媒体列表（allUnfilteredMedia 使用 Eagerly，始终有数据）
-            // 搜索不受当前 Tab（截图/视频等）限制，在全库范围内查找
+            // 全量未筛选媒体列表（Eagerly 活跃，始终有数据）
             val allItems = allUnfilteredMedia.value
-
-            // 判断 AI 是否已配置
             val aiConfigured = aiStateManager.state.value is AiState.Configured
 
-            val results: List<MediaItem> = if (aiConfigured) {
-                // ---- AI 路径：发送文字给 LLM 解析结构化条件，再本地过滤 ----
-                val parseResult = aiSearchRepository.parseQuery(
-                    query    = trimmed,
-                    nowMillis = System.currentTimeMillis()
-                )
-                if (parseResult.isSuccess) {
-                    val criteria = parseResult.getOrThrow()
-                    applySearchCriteria(allItems, criteria)
-                } else {
-                    // AI 解析失败，降级到本地模糊匹配
-                    localFuzzySearch(allItems, trimmed)
+            if (aiConfigured) {
+                // ---- AI 路径 ----
+                val parseResult = aiSearchRepository.parseQuery(trimmed, System.currentTimeMillis())
+                if (parseResult.isFailure) {
+                    // AI 解析失败，降级本地模糊匹配
+                    val fallback = localFuzzySearch(allItems, trimmed)
+                    _searchState.value = if (fallback.isEmpty()) SearchUiState.Empty
+                                         else SearchUiState.Success(fallback)
+                    return@launch
                 }
+
+                val criteria = parseResult.getOrThrow()
+
+                // ① 先做元数据过滤（日期 / 类型 / 文件名 / 相册名）
+                val metadataFiltered = applySearchCriteria(allItems, criteria)
+
+                // ② 判断是否需要视觉扫描
+                val visualQuery = criteria.visualQuery
+                if (visualQuery == null) {
+                    // 纯元数据查询，直接返回
+                    _searchState.value = if (metadataFiltered.isEmpty()) SearchUiState.Empty
+                                         else SearchUiState.Success(metadataFiltered)
+                    return@launch
+                }
+
+                // ③ 视觉扫描：最多扫描 30 张（最新的优先，控制 API 调用次数和费用）
+                val MAX_SCAN = 30
+                val candidates = if (metadataFiltered.isNotEmpty()) {
+                    // 有元数据预筛选结果时，只在候选集里做视觉扫描
+                    metadataFiltered.take(MAX_SCAN)
+                } else {
+                    // 无元数据限制时，取最新 30 张
+                    allItems.take(MAX_SCAN)
+                }
+
+                val visualResults = mutableListOf<MediaItem>()
+                var scanned = 0
+
+                // 每批 3 张（节省 Token，同时保证多模态 API 不超限）
+                for (batch in candidates.chunked(3)) {
+                    val hitIndices = aiSearchRepository.visualSearchBatch(batch, visualQuery)
+                    hitIndices.forEach { idx ->
+                        if (idx in batch.indices) visualResults.add(batch[idx])
+                    }
+                    scanned += batch.size
+
+                    // 实时更新 UI：用户能看到进度和已发现的图片
+                    _searchState.value = SearchUiState.VisualSearching(
+                        found          = visualResults.size,
+                        scanned        = scanned,
+                        total          = candidates.size,
+                        partialResults = visualResults.toList()
+                    )
+                }
+
+                // ④ 扫描完毕
+                _searchState.value = if (visualResults.isEmpty()) SearchUiState.Empty
+                                     else SearchUiState.Success(visualResults)
+
             } else {
                 // ---- 离线路径：仅文件名 / 相册名模糊匹配 ----
-                localFuzzySearch(allItems, trimmed)
-            }
-
-            _searchState.value = if (results.isEmpty()) {
-                SearchUiState.Empty
-            } else {
-                SearchUiState.Success(results)
+                val results = localFuzzySearch(allItems, trimmed)
+                _searchState.value = if (results.isEmpty()) SearchUiState.Empty
+                                     else SearchUiState.Success(results)
             }
         }
     }
@@ -628,6 +667,19 @@ class GalleryViewModel @Inject constructor(
         data object Idle : SearchUiState
         /** AI 正在解析查询文字 */
         data object Loading : SearchUiState
+        /**
+         * 视觉扫描进行中（实时更新）
+         * @param found          已发现的匹配图片数
+         * @param scanned        已扫描的图片数
+         * @param total          计划扫描的总图片数
+         * @param partialResults 截至目前已发现的图片（供 UI 实时展示）
+         */
+        data class VisualSearching(
+            val found: Int,
+            val scanned: Int,
+            val total: Int,
+            val partialResults: List<MediaItem>
+        ) : SearchUiState
         /** 搜索完成，有结果 */
         data class Success(val results: List<MediaItem>) : SearchUiState
         /** 搜索完成，无结果 */
