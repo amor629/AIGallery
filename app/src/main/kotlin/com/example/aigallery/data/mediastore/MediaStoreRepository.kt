@@ -54,7 +54,11 @@ class MediaStoreRepository @Inject constructor(
         MediaStore.MediaColumns.SIZE,
         MediaStore.MediaColumns.BUCKET_ID,
         MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-        "is_motion_photo",               // 实况照片标志（Samsung 私有列，非标准 AOSP API；其他设备返回 -1 自动降级）
+        // 注意：不在 projection 里放 "is_motion_photo"。
+        // 该列为 Samsung 私有扩展，非标准 AOSP API；把它放入 projection 会导致非三星设备
+        // 的 ContentResolver.query() 抛出 SQLiteException（未知列名）。
+        // 转而在 cursor 返回后用 getColumnIndex 软探测：三星设备返回正常索引，
+        // 其他设备返回 -1，代码中已用 (col != -1) 判断，自动安全降级。
     )
 
     /** 视频查询列（在图片列基础上增加 DURATION） */
