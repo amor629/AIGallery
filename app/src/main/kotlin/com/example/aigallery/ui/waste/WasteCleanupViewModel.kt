@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.ai.AiStateManager
+import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.domain.model.WastePhoto
 import com.example.aigallery.domain.repository.IAiSearchRepository
@@ -70,7 +71,7 @@ class WasteCleanupViewModel @Inject constructor(
     // 扫描逻辑
     // ----------------------------------------------------------------
 
-    /** 开始扫描（最多扫描 [MAX_SCAN] 张图片，每批 [BATCH_SIZE] 张） */
+    /** 开始扫描（最多扫描 [MAX_SCAN] 张图片） */
     fun startScan() {
         if (aiStateManager.state.value !is AiState.Configured) {
             _scanState.value = ScanState.Error("AI 未配置，请先在设置页填写 API 地址和 Key")
@@ -80,7 +81,6 @@ class WasteCleanupViewModel @Inject constructor(
             _scanState.value = ScanState.Scanning(0, 0, 0, emptyList())
             _selectedUris.value = emptySet()
             try {
-                // 只扫描图片（不扫视频），取最近的 MAX_SCAN 张
                 val allImages = mediaRepository.getAllMedia().first()
                     .filter { it.mediaType == MediaType.IMAGE }
                     .take(MAX_SCAN)
@@ -91,19 +91,64 @@ class WasteCleanupViewModel @Inject constructor(
                 }
 
                 val results = mutableListOf<WastePhoto>()
+
+                // ① 截图：直接用文件夹元数据识别，不需要调用 AI
+                val screenshots = allImages.filter { it.isScreenshot }
+                    .map { WastePhoto(it, "截图") }
+                results.addAll(screenshots)
+
+                // ② 非截图照片：用 AI 识别模糊 / 闭眼 / 重复
+                //    重要：按拍摄时间排序后将"时间相近"（3秒内）的照片放在同一批次，
+                //    这样连拍/重复拍的照片会在同一批次内被模型比对，大幅提升重复检测率
+                val nonScreenshots = allImages
+                    .filter { !it.isScreenshot }
+                    .sortedByDescending { if (it.dateTaken > 0) it.dateTaken else it.dateAdded }
+
+                val batches = buildTemporalBatches(nonScreenshots)
                 var scanned = 0
 
-                for (batch in allImages.chunked(BATCH_SIZE)) {
+                for (batch in batches) {
                     val batchResults = aiSearchRepository.analyzeWasteBatch(batch)
                     results.addAll(batchResults)
                     scanned += batch.size
-                    _scanState.value = ScanState.Scanning(scanned, allImages.size, results.size, results.toList())
+                    _scanState.value = ScanState.Scanning(
+                        scanned  = scanned + screenshots.size,
+                        total    = allImages.size,
+                        found    = results.size,
+                        partialResults = results.toList()
+                    )
                 }
                 _scanState.value = ScanState.Done(results.toList())
             } catch (e: Exception) {
                 _scanState.value = ScanState.Error(e.message ?: "扫描失败，请重试")
             }
         }
+    }
+
+    /**
+     * 将照片列表按时间临近度分批：
+     * - 拍摄时间相差 ≤ [DUPLICATE_WINDOW_MS] 的照片放入同一批次（提升重复检测率）
+     * - 每批最多 [BATCH_SIZE] 张，超出则新建批次
+     */
+    private fun buildTemporalBatches(items: List<MediaItem>): List<List<MediaItem>> {
+        if (items.isEmpty()) return emptyList()
+        val batches = mutableListOf<MutableList<MediaItem>>()
+        var currentBatch = mutableListOf<MediaItem>()
+        var prevTime = Long.MIN_VALUE
+
+        for (item in items) {
+            val t = if (item.dateTaken > 0) item.dateTaken else item.dateAdded
+            val isClose = prevTime != Long.MIN_VALUE && (prevTime - t) <= DUPLICATE_WINDOW_MS
+            if (currentBatch.isEmpty() || (isClose && currentBatch.size < BATCH_SIZE)) {
+                currentBatch.add(item)
+            } else {
+                batches.add(currentBatch)
+                currentBatch = mutableListOf(item)
+            }
+            prevTime = t
+        }
+        if (currentBatch.isNotEmpty()) batches.add(currentBatch)
+        return batches
     }
 
     // ----------------------------------------------------------------
@@ -156,5 +201,7 @@ class WasteCleanupViewModel @Inject constructor(
         private const val MAX_SCAN = 90
         /** 每批发送给视觉 AI 的图片数（不超过 3，控制 Token）*/
         private const val BATCH_SIZE = 3
+        /** 判断为"时间相近"（可能是连拍重复）的时间窗口：3 秒 */
+        private const val DUPLICATE_WINDOW_MS = 3_000L
     }
 }

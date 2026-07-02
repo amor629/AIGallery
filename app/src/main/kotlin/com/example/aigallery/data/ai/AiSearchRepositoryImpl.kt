@@ -57,6 +57,7 @@ class AiSearchRepositoryImpl @Inject constructor(
         private const val MAX_TOKENS_VISUAL = 50        // 只需返回编号数组
         private const val MAX_VISUAL_DIM    = 512       // 视觉搜索用较小缩略图
         private const val JPEG_QUALITY      = 75
+        private const val MAX_WASTE_DIM     = 768       // 废片扫描用更高分辨率以提升人脸/模糊识别准确率
     }
 
     // ============================================================
@@ -279,11 +280,11 @@ class AiSearchRepositoryImpl @Inject constructor(
     }
 
     /** 将图�?URI 读取、等比缩�?MAX_VISUAL_DIM px，返�?JPEG Base64 �?null */
-    private fun encodeImageToBase64(uri: android.net.Uri): String? = try {
+    private fun encodeImageToBase64(uri: android.net.Uri, maxDim: Int = MAX_VISUAL_DIM): String? = try {
         val inputStream = context.contentResolver.openInputStream(uri) ?: return null
         val original = BitmapFactory.decodeStream(inputStream).also { inputStream.close() }
-        val scale = minOf(MAX_VISUAL_DIM.toFloat() / original.width,
-                          MAX_VISUAL_DIM.toFloat() / original.height, 1f)
+        val scale = minOf(maxDim.toFloat() / original.width,
+                          maxDim.toFloat() / original.height, 1f)
         val scaled = if (scale < 1f)
             Bitmap.createScaledBitmap(original, (original.width * scale).toInt(), (original.height * scale).toInt(), true)
         else original
@@ -309,7 +310,7 @@ class AiSearchRepositoryImpl @Inject constructor(
             val encodedIndices = mutableListOf<Int>()
 
             for (i in mediaItems.indices) {
-                val b64 = encodeImageToBase64(mediaItems[i].uri) ?: continue
+                val b64 = encodeImageToBase64(mediaItems[i].uri, MAX_WASTE_DIM) ?: continue
                 contentParts.add(AiContentPart(type = "image_url", imageUrl = AiImageUrl("data:image/jpeg;base64,$b64")))
                 encodedIndices.add(i)
             }
@@ -318,7 +319,14 @@ class AiSearchRepositoryImpl @Inject constructor(
             val n = contentParts.size
             contentParts.add(AiContentPart(
                 type = "text",
-                text = "分析以上 $n 张图片（编号 0~${n - 1}），找出废片。\n废片类型：模糊、闭眼、重复（批次内高度相似）、截图。\n只标记明确废片，不确定的不标记。\n返回 JSON 数组如 [{\"index\":0,\"reason\":\"模糊\"}]，无废片返回 []。只输出 JSON。"
+                text = "以下 $n 张图片按编号 0~${n-1} 排列，逐张判断是否属于废片。\n" +
+                       "废片标准：\n" +
+                       "  1. 模糊——整体画面模糊、抖动、焦点失准（非刻意艺术效果）\n" +
+                       "  2. 闭眼——画面中有人物，且存在明显闭眼的情况（双眼完全或大部分闭合）\n" +
+                       "  3. 重复——本批次中有两张或以上内容极其相似（主体、构图几乎一致）\n" +
+                       "  4. 截图——手机屏幕截图，而非真实场景拍摄\n" +
+                       "只标记明确的废片，不确定的一律不标记。\n" +
+                       "返回 JSON 数组：[{\"index\":0,\"reason\":\"模糊\"}]，无废片返回 []。只输出 JSON。"
             ))
             val systemMsg = AiMessage(role = "system", content = listOf(AiContentPart(type = "text",
                 text = "你是专业废片识别助手，判断严格，只标记明确废片。")))
@@ -339,7 +347,7 @@ class AiSearchRepositoryImpl @Inject constructor(
 
     private fun parseWasteArray(text: String, encodedIndices: List<Int>, mediaItems: List<MediaItem>): List<WastePhoto> {
         return try {
-            val arrayStr = Regex("\\\\[[\\\\s\\\\S]*?\\\\]").find(text.trim())?.value ?: return emptyList()
+            val arrayStr = Regex("\\[[\\s\\S]*?\\]").find(text.trim())?.value ?: return emptyList()
             val arr = JsonParser.parseString(arrayStr).asJsonArray
             arr.mapNotNull { elem ->
                 val obj    = runCatching { elem.asJsonObject }.getOrNull() ?: return@mapNotNull null
