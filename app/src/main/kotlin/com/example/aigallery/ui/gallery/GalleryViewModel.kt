@@ -359,12 +359,16 @@ class GalleryViewModel @Inject constructor(
      * 若当前选中数 < 总数 → 全选；否则 → 取消全选
      */
     fun toggleSelectAll() {
-        val allMedia = timelineMedia.value
-            .filterIsInstance<TimelineItem.Media>()
-            .map { it.media.uri }
-            .toSet()
+        // 搜索模式下全选搜索结果；普通模式下全选时间轴
+        val uriSet = when (val state = _searchState.value) {
+            is SearchUiState.Success -> state.results.map { it.uri }.toSet()
+            else -> timelineMedia.value
+                .filterIsInstance<TimelineItem.Media>()
+                .map { it.media.uri }
+                .toSet()
+        }
         _selectedUris.update { current ->
-            if (current.size < allMedia.size) allMedia else emptySet()
+            if (current.size < uriSet.size) uriSet else emptySet()
         }
     }
 

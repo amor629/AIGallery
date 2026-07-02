@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -229,12 +230,17 @@ fun PhotoDetailScreen(
         // ============================================================
         // HorizontalPager：左右滑动切换照片/视频
         //   userScrollEnabled：当前页放大中（scale>1）时禁止翻页
-        //   beyondViewportPageCount=1：预渲染前后各 1 张，滑动丝滑
+        //   beyondViewportPageCount=2：预渲染前后各 2 张，图片提前解码，无中途卡顿
+        //   flingBehavior：tween(200ms) 替代默认弹性 spring，消除翻页停顿感
         // ============================================================
         HorizontalPager(
             state                  = pagerState,
             userScrollEnabled      = currentPageScale <= 1.01f,
-            beyondViewportPageCount = 1,
+            beyondViewportPageCount = 2,
+            flingBehavior          = PagerDefaults.flingBehavior(
+                state             = pagerState,
+                snapAnimationSpec = tween(durationMillis = 200)
+            ),
             modifier              = Modifier.fillMaxSize()
         ) { pageIndex ->
             val mediaItem = allMedia.getOrNull(pageIndex) ?: return@HorizontalPager

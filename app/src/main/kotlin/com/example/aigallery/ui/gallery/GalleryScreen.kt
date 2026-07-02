@@ -822,12 +822,16 @@ fun GalleryScreen(
                                 ) {
                                     items(results.size) { index ->
                                         val item = results[index]
+                                        // 搜索结果支持多选：长按进入多选模式，单击切换选中/查看
                                         MediaThumbnailItem(
                                             media       = item,
-                                            isSelecting = false,
-                                            isSelected  = false,
-                                            onClick     = { onNavigateToDetail(item) },
-                                            onLongClick = {}
+                                            isSelecting = isSelecting,
+                                            isSelected  = item.uri in selectedUris,
+                                            onClick     = {
+                                                if (isSelecting) viewModel.toggleSelection(item.uri)
+                                                else onNavigateToDetail(item)
+                                            },
+                                            onLongClick = { viewModel.enterSelectionMode(item.uri) }
                                         )
                                     }
                                 }
