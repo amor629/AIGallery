@@ -124,13 +124,16 @@ class AiSearchRepositoryImpl @Inject constructor(
             if (contentParts.isEmpty()) return@withContext emptyList()
 
             // �?附加问题文本（放在图片之后，部分多模态模型要求文本在最后）
+            // 使用严格标准：要求图片核心主体是查询内容，防止因背景/次要元素导致误匹配
             val n = contentParts.size
             contentParts.add(
                 AiContentPart(
                     type = "text",
-                    text = "以上 $n 张图片按顺序编号 0 到 ${n - 1}，" +
-                           "哪些包含或与「$visualQuery」相关？" +
-                           "只回答命中编号，JSON 数组格式，例如 [0,2]；无匹配回答 []。不要解释。"
+                    text = "以上 $n 张图片按顺序编号 0 到 ${n - 1}。\n" +
+                           "任务：找出主体内容**明确是**「$visualQuery」的图片。\n" +
+                           "判断标准：图片的核心拍摄对象或场景主体必须是该内容；" +
+                           "仅在背景中偶尔出现、或只是间接相关的，不算命中。\n" +
+                           "只回答命中的编号，JSON 数组格式，例如 [0,2]；无匹配回答 []。不要输出任何解释。"
                 )
             )
 
