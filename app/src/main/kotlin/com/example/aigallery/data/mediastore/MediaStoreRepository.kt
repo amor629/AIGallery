@@ -174,8 +174,11 @@ class MediaStoreRepository @Inject constructor(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 imageProjection, selection, selectionArgs, MediaType.IMAGE
             )
-        } catch (e: android.database.sqlite.SQLiteException) {
-            // AOSP 设备：is_motion_photo 私有列不存在，退回标准投影（isMotionPhoto 始终为 false）
+        } catch (e: Exception) {
+            // 不支持 is_motion_photo 私有列的设备在此处可能抛出多种异常：
+            //   SQLiteException（"no such column"）、IllegalArgumentException（"Invalid column"）等，
+            // 统一回退到 AOSP 标准投影，isMotionPhoto 在此路径始终为 false。
+            android.util.Log.w("MediaStore", "is_motion_photo column not supported, fallback: ${e.message}")
             queryMedia(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 imageProjectionAOSP, selection, selectionArgs, MediaType.IMAGE
