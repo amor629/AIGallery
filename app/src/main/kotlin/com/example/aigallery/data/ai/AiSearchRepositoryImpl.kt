@@ -29,6 +29,7 @@ import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.example.aigallery.domain.model.WastePhoto
 
 /**
  * AI 自然语言检�?+ 视觉内容搜索 Repository 实现（Data 层）
@@ -295,22 +296,58 @@ class AiSearchRepositoryImpl @Inject constructor(
         android.util.Log.w("AiVisualSearch", "图片编码失败 $uri: ${e.message}")
         null
     }
+
+    // ============================================================
+    // analyzeWasteBatch：废片批量识别（模糊 / 闭眼 / 重复 / 截图）
+    // ============================================================
+
+    override suspend fun analyzeWasteBatch(mediaItems: List<MediaItem>): List<WastePhoto> =
+        withContext(Dispatchers.IO) {
+        try {
+            val endpoint = aiApiClient.requireBaseUrl().trimEnd('/') + "/chat/completions"
+            val contentParts   = mutableListOf<AiContentPart>()
+            val encodedIndices = mutableListOf<Int>()
+
+            for (i in mediaItems.indices) {
+                val b64 = encodeImageToBase64(mediaItems[i].uri) ?: continue
+                contentParts.add(AiContentPart(type = "image_url", imageUrl = AiImageUrl("data:image/jpeg;base64,$b64")))
+                encodedIndices.add(i)
+            }
+            if (contentParts.isEmpty()) return@withContext emptyList()
+
+            val n = contentParts.size
+            contentParts.add(AiContentPart(
+                type = "text",
+                text = "分析以上 $n 张图片（编号 0~${n - 1}），找出废片。\n废片类型：模糊、闭眼、重复（批次内高度相似）、截图。\n只标记明确废片，不确定的不标记。\n返回 JSON 数组如 [{\"index\":0,\"reason\":\"模糊\"}]，无废片返回 []。只输出 JSON。"
+            ))
+            val systemMsg = AiMessage(role = "system", content = listOf(AiContentPart(type = "text",
+                text = "你是专业废片识别助手，判断严格，只标记明确废片。")))
+
+            val response = aiChatService.chatCompletion(endpoint,
+                AiChatRequest(model = MODEL_VISUAL, maxTokens = 128,
+                    messages = listOf(systemMsg, AiMessage(role = "user", content = contentParts))))
+            val content = response.choices?.firstOrNull()?.message?.content
+                ?: return@withContext emptyList()
+
+            parseWasteArray(content, encodedIndices, mediaItems)
+        } catch (e: AiApiClient.AiNotConfiguredException) { emptyList() }
+          catch (e: Exception) {
+              android.util.Log.w("AiWasteScan", "废片识别失败: ${e.message}")
+              emptyList()
+          }
+    }
+
+    private fun parseWasteArray(text: String, encodedIndices: List<Int>, mediaItems: List<MediaItem>): List<WastePhoto> {
+        return try {
+            val arrayStr = Regex("\\\\[[\\\\s\\\\S]*?\\\\]").find(text.trim())?.value ?: return emptyList()
+            val arr = JsonParser.parseString(arrayStr).asJsonArray
+            arr.mapNotNull { elem ->
+                val obj    = runCatching { elem.asJsonObject }.getOrNull() ?: return@mapNotNull null
+                val idx    = obj.get("index")?.asInt ?: return@mapNotNull null
+                val reason = obj.get("reason")?.asString?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val mi = if (idx in encodedIndices.indices) encodedIndices[idx] else return@mapNotNull null
+                if (mi in mediaItems.indices) WastePhoto(mediaItems[mi], reason) else null
+            }
+        } catch (e: Exception) { emptyList() }
+    }
 }
-
-
-/**
- * AI 自然语言检索解�?Repository 实现（Data 层）
- *
- * 流程�?
- * 1. 检�?AI 是否已配置（未配置直接返�?Failure�?
- * 2. 将当前时�?+ 用户查询文本打包�?Prompt 发给 LLM
- * 3. LLM 返回 JSON 格式的结构化检索条�?
- * 4. 解析 JSON �?[SearchCriteria]
- *
- * ⚠️ 隐私安全�?
- * - 仅发送文字（当前时间 + 用户查询），绝对不上传任何图�?
- * - 所有实际的媒体过滤在设备本地完�?
- *
- * ⚠️ 异常处理�?
- * - 所有异常在此类内部捕获并转换为 [Result.failure]，不向外抛出
- */

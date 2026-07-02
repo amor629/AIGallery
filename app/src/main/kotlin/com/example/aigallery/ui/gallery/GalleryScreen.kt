@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -213,6 +214,7 @@ private fun isPartialMediaAccess(context: android.content.Context): Boolean =
 @Composable
 fun GalleryScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToWaste: () -> Unit = {},        // AI 废片清理入口
     onNavigateToDetail: (MediaItem) -> Unit = {},  // 点击缩略图进入详情页
     viewModel: GalleryViewModel = hiltViewModel()
 ) {
@@ -530,6 +532,14 @@ fun GalleryScreen(
                             }
                         },
                         actions = {
+                            // AI 废片清理按钮
+                            IconButton(onClick = onNavigateToWaste) {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = "AI 废片清理",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                             // 搜索按钮（仅在已有内容时可用）
                             if (uiState is GalleryUiState.Success) {
                                 IconButton(onClick = viewModel::activateSearch) {

@@ -27,6 +27,7 @@ import com.example.aigallery.ui.detail.PhotoDetailScreen
 import com.example.aigallery.ui.gallery.GalleryScreen
 import com.example.aigallery.ui.gallery.GalleryViewModel
 import com.example.aigallery.ui.settings.SettingsScreen
+import com.example.aigallery.ui.waste.WasteCleanupScreen
 import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
@@ -94,6 +95,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                         GalleryScreen(
                             onNavigateToSettings = { navController.navigate("settings") },
+                            onNavigateToWaste    = { navController.navigate("waste") },
                             onNavigateToDetail = { mediaItem ->
                                 // 将 content URI 编码后作为查询参数，避免路径分隔符冲突
                                 val encodedUri = URLEncoder.encode(
@@ -148,6 +150,13 @@ class MainActivity : ComponentActivity() {
                     // ---- 设置页（AI 配置入口）----
                     composable("settings") {
                         SettingsScreen(
+                            onNavigateBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    // ---- AI 废片清理页 ----
+                    composable("waste") {
+                        WasteCleanupScreen(
                             onNavigateBack = { navController.popBackStack() }
                         )
                     }
