@@ -123,30 +123,41 @@ class AiSearchRepositoryImpl @Inject constructor(
             }
             if (contentParts.isEmpty()) return@withContext emptyList()
 
-            // �?附加问题文本（放在图片之后，部分多模态模型要求文本在最后）
-            // 使用严格标准：要求图片核心主体是查询内容，防止因背景/次要元素导致误匹配
+
+            // 附加问题文本（放在图片之后，部分多模态模型要求文本在最后）
+            // bitmask 格式：让模型对每张图片独立打 0/1 分，避免"选号"时宁多勿少的偏差
             val n = contentParts.size
             contentParts.add(
                 AiContentPart(
                     type = "text",
-                    text = "以上 $n 张图片按顺序编号 0 到 ${n - 1}。\n" +
-                           "任务：找出主体内容**明确是**「$visualQuery」的图片。\n" +
-                           "判断标准：图片的核心拍摄对象或场景主体必须是该内容；" +
-                           "仅在背景中偶尔出现、或只是间接相关的，不算命中。\n" +
-                           "只回答命中的编号，JSON 数组格式，例如 [0,2]；无匹配回答 []。不要输出任何解释。"
+                    text = "以上 $n 张图片按编号 0~${n - 1} 排列。\n" +
+                           "对每张图片独立判断：图片的核心拍摄主体是否明确是「$visualQuery」。\n" +
+                           "不算命中：截图/屏幕内容、视频播放画面、背景中的次要元素、仅间接相关。\n" +
+                           "按编号顺序输出 $n 个结果（命中=1，不命中=0），JSON 数组格式。\n" +
+                           "示例（3张图）：[1,0,0]。只输出 JSON 数组，不要任何解释。"
                 )
+            )
+
+            // 用 system 消息全局限制模型行为：宁漏勿误
+            val systemMsg = AiMessage(
+                role = "system",
+                content = listOf(AiContentPart(
+                    type = "text",
+                    text = "你是严格的图片内容分类器。只有当图片核心拍摄主体明确是用户指定内容时才输出 1；" +
+                           "截图界面内容、背景元素、视频帧、间接相关的一律输出 0。宁可漏判，绝不误判。"
+                ))
             )
 
             val response = aiChatService.chatCompletion(
                 endpoint,
                 AiChatRequest(model = MODEL_VISUAL, maxTokens = MAX_TOKENS_VISUAL,
-                    messages = listOf(AiMessage(role = "user", content = contentParts)))
+                    messages = listOf(systemMsg, AiMessage(role = "user", content = contentParts)))
             )
             val content = response.choices?.firstOrNull()?.message?.content
                 ?: return@withContext emptyList()
 
-            // �?解析 "[0, 2]" �?真实 MediaItem 下标
-            parseIndexArray(content).mapNotNull { pos ->
+            // 解析 bitmask "[1,0,1]" → 命中下标 → 真实 MediaItem 下标
+            parseBitmaskArray(content, n).mapNotNull { pos ->
                 if (pos in encodedIndices.indices) encodedIndices[pos] else null
             }
 
@@ -240,11 +251,25 @@ class AiSearchRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun parseIndexArray(text: String): List<Int> = try {
-        val inner = Regex("\\[([^]]*)]").find(text.trim())?.groupValues?.get(1) ?: return emptyList()
-        if (inner.isBlank()) emptyList()
-        else inner.split(",").mapNotNull { it.trim().toIntOrNull() }
-    } catch (e: Exception) { emptyList() }
+    /**
+     * 解析视觉搜索的 bitmask 响应 "[1,0,1]" → 返回值为 1 的位置列表。
+     * 若返回的数组长度与 batchSize 不符，兜底当作下标列表处理（向后兼容）。
+     */
+    private fun parseBitmaskArray(text: String, batchSize: Int): List<Int> {
+        return try {
+            val inner = Regex("""\[([^\]]*)\]""").find(text.trim())?.groupValues?.get(1)
+                ?: return emptyList()
+            if (inner.isBlank()) return emptyList()
+            val values = inner.split(",").mapNotNull { it.trim().toIntOrNull() }
+            if (values.size == batchSize && values.all { it == 0 || it == 1 }) {
+                // bitmask 格式：收集值为 1 的位置
+                values.indices.filter { values[it] == 1 }
+            } else {
+                // 兜底：兼容旧的下标格式 "[0,2]"
+                values
+            }
+        } catch (e: Exception) { emptyList() }
+    }
 
     private fun extractJson(text: String): String {
         Regex("```(?:json)?\\s*([\\s\\S]*?)```").find(text.trim())?.let { return it.groupValues[1].trim() }
