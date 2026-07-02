@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -231,6 +232,11 @@ fun GalleryScreen(
     val searchState     by viewModel.searchState.collectAsStateWithLifecycle()
     // 搜索框自动聚焦器：激活搜索模式时自动弹出键盘
     val searchFocusRequester = remember { FocusRequester() }
+
+    // 搜索模式下拦截系统返回手势/按钮：优先退出搜索而非退出 App
+    BackHandler(enabled = isSearchActive) {
+        viewModel.deactivateSearch()
+    }
 
     // ---- 是否显示"确认删除"对话框（在系统弹窗之前的 App 内确认）----
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }

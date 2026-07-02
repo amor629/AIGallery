@@ -148,6 +148,20 @@ class GalleryViewModel @Inject constructor(
             replay = 1
         )
 
+    /**
+     * 全量媒体列表（不含 Tab 筛选限制），专为全局搜索使用
+     *
+     * 重要：使用 SharingStarted.Eagerly 确保 ViewModel 创建后立即开始收集，
+     * 保证用户点击搜索时 .value 已有数据（而非空列表）。
+     * 与 rawMediaFlow 共享同一 ContentObserver，不增加额外 MediaStore 订阅。
+     */
+    private val allUnfilteredMedia: StateFlow<List<MediaItem>> = rawMediaFlow
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = emptyList()
+        )
+
     // ---- 当前筛选器状态 ----
     private val _currentFilter = MutableStateFlow(MediaFilter.All)
 
@@ -504,8 +518,9 @@ class GalleryViewModel @Inject constructor(
         viewModelScope.launch {
             _searchState.value = SearchUiState.Loading
 
-            // 取当前完整媒体列表（来自已过滤的 allMedia，含当前 Tab 筛选条件）
-            val allItems = allMedia.value
+            // 取全量未筛选媒体列表（allUnfilteredMedia 使用 Eagerly，始终有数据）
+            // 搜索不受当前 Tab（截图/视频等）限制，在全库范围内查找
+            val allItems = allUnfilteredMedia.value
 
             // 判断 AI 是否已配置
             val aiConfigured = aiStateManager.state.value is AiState.Configured
