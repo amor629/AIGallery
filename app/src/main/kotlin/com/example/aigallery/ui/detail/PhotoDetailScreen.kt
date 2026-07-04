@@ -1,7 +1,12 @@
 ﻿package com.example.aigallery.ui.detail
 
+import android.app.Activity
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
@@ -31,7 +36,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
@@ -42,12 +46,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,7 +74,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -84,8 +89,14 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.domain.model.AiAnalysisResult
+import com.example.aigallery.domain.model.AiEditType
+import com.example.aigallery.domain.model.AiImageEditResult
+import com.example.aigallery.domain.model.LocalEditMode
 import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
+import com.example.aigallery.ui.edit.AiEditBottomSheet
+import com.example.aigallery.ui.edit.AiEditResultDialog
+import com.example.aigallery.ui.edit.PhotoEditBottomBar
 import com.example.aigallery.ui.LocalAnimatedVisibilityScope
 import com.example.aigallery.ui.LocalSharedTransitionScope
 import kotlinx.coroutines.Job
@@ -114,7 +125,9 @@ import kotlin.math.abs
 fun PhotoDetailScreen(
     allMedia      : List<MediaItem>,
     initialUri    : Uri,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onNavigateToImageEdit: (Uri, LocalEditMode) -> Unit = { _, _ -> },
+    onNavigateToVideoTrim: (Uri, String) -> Unit = { _, _ -> }
 ) {
     // allMedia 尚未加载完毕时（极少发生），显示加载中状态
     if (allMedia.isEmpty()) {
@@ -144,9 +157,56 @@ fun PhotoDetailScreen(
     val aiViewModel    : AiDetailViewModel = hiltViewModel()
     val aiState        by aiViewModel.aiState.collectAsStateWithLifecycle()
     val analysisResult by aiViewModel.analysisResult.collectAsStateWithLifecycle()
+    val captionResult  by aiViewModel.captionResult.collectAsStateWithLifecycle()
+    val imageEditResult by aiViewModel.imageEditResult.collectAsStateWithLifecycle()
+    val writeRequest by aiViewModel.writeRequest.collectAsStateWithLifecycle()
+    val deleteRequest by aiViewModel.deleteRequest.collectAsStateWithLifecycle()
 
     /** 控制"AI 未配置"引导对话框的可见性 */
     var showAiConfigDialog by remember { mutableStateOf(false) }
+    var showAiEditSheet by remember { mutableStateOf(false) }
+
+    /** 控制"确认删除"对话框（系统删除授权弹窗之前的 App 内二次确认）的可见性 */
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+
+    val clipboardManager = LocalClipboardManager.current
+    val toastContext = LocalContext.current
+
+    // ---- "覆盖原图"系统写入授权弹窗 Launcher ----
+    val writeLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result -> aiViewModel.onWriteRequestResult(result.resultCode == Activity.RESULT_OK) }
+
+    LaunchedEffect(writeRequest) {
+        writeRequest?.let { sender ->
+            writeLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }
+    }
+
+    // ---- 删除当前照片的系统授权弹窗 Launcher ----
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        aiViewModel.clearDeleteRequest()
+        if (result.resultCode == Activity.RESULT_OK) {
+            // 已删除，当前照片不复存在，退出详情页
+            onNavigateBack()
+        }
+    }
+
+    LaunchedEffect(deleteRequest) {
+        deleteRequest?.let { sender ->
+            deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }
+    }
+
+    LaunchedEffect(imageEditResult) {
+        val ir = imageEditResult
+        if (ir is AiImageEditResult.Saved) {
+            Toast.makeText(toastContext, ir.message, Toast.LENGTH_SHORT).show()
+            aiViewModel.clearImageEditResult()
+        }
+    }
 
     /** 顶部栏（返回 + 文件名）可见性，单击图片切换 */
     var showBars by remember { mutableStateOf(true) }
@@ -187,11 +247,10 @@ fun PhotoDetailScreen(
         derivedStateOf { (1f - abs(dismissOffsetY) / 500f).coerceIn(0f, 1f) }
     }
 
-    // 翳页时重置 AI 分析结果 & 下滑偏移量 & 实况播放（防止上一张状态残留）
+    // 翻页时重置 AI 分析结果 & 下滑偏移量
     LaunchedEffect(pagerState.currentPage) {
-        aiViewModel.clearResult()
+        aiViewModel.clearAllOnPageChange()
         dismissOffsetY = 0f
-
     }
 
     /** 当前可见页的媒体项（顶部栏标题、AI 按钮类型判断等使用） */
@@ -214,6 +273,157 @@ fun PhotoDetailScreen(
             confirmButton = {
                 TextButton(onClick = { showAiConfigDialog = false }) { Text("知道了") }
             }
+        )
+    }
+
+    // ================================================================
+    // AI 写文案结果弹窗（成功：展示文案 + 一键复制；失败：提示 + 重试）
+    // ================================================================
+    when (val cr = captionResult) {
+        is AiAnalysisResult.Success -> {
+            AlertDialog(
+                onDismissRequest = aiViewModel::clearCaption,
+                title = {
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector        = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint               = Color(0xFFFFD700)
+                        )
+                        Text("AI 朋友圈文案")
+                    }
+                },
+                text = { Text(cr.description, style = MaterialTheme.typography.bodyLarge) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        clipboardManager.setText(AnnotatedString(cr.description))
+                        Toast.makeText(toastContext, "文案已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        aiViewModel.clearCaption()
+                    }) { Text("一键复制") }
+                },
+                dismissButton = {
+                    TextButton(onClick = aiViewModel::clearCaption) { Text("关闭") }
+                }
+            )
+        }
+        is AiAnalysisResult.Error -> {
+            AlertDialog(
+                onDismissRequest = aiViewModel::clearCaption,
+                title = { Text("文案生成失败") },
+                text  = { Text(cr.message) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        currentMedia?.let { aiViewModel.generateCaption(it.uri) }
+                    }) { Text("重试") }
+                },
+                dismissButton = {
+                    TextButton(onClick = aiViewModel::clearCaption) { Text("取消") }
+                }
+            )
+        }
+        else -> {}
+    }
+
+    // ================================================================
+    // AI 图片编辑结果弹窗（老照片修复 / AI 美化）
+    // 处理完成后需用户选择"另存为新图片"或"覆盖原图"，而非自动保存
+    // ================================================================
+    when (val ir = imageEditResult) {
+        is AiImageEditResult.ReadyToSave -> {
+            AiEditResultDialog(
+                bitmap = ir.bitmap,
+                onSaveAsNew = { aiViewModel.saveAsNew(ir.bitmap, ir.editType) },
+                onOverwrite = { aiViewModel.requestOverwrite(ir.sourceUri, ir.bitmap) },
+                onDismiss = aiViewModel::clearImageEditResult
+            )
+        }
+        is AiImageEditResult.Error -> {
+            AlertDialog(
+                onDismissRequest = aiViewModel::clearImageEditResult,
+                title = { Text("AI 编辑失败") },
+                text  = { Text(ir.message) },
+                confirmButton = {
+                    TextButton(onClick = aiViewModel::clearImageEditResult) { Text("知道了") }
+                }
+            )
+        }
+        else -> {}
+    }
+
+    // ================================================================
+    // "确认删除"对话框（App 内二次确认，确认后才弹出系统删除授权框）
+    // ================================================================
+    if (showDeleteConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmDialog = false },
+            title = { Text("确认删除") },
+            text  = { Text("即将永久删除这张照片，此操作不可恢复，确定继续吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirmDialog = false
+                    currentMedia?.let { aiViewModel.requestDelete(it.uri) }
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirmDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showAiEditSheet && currentMedia?.mediaType == MediaType.IMAGE) {
+        AiEditBottomSheet(
+            onDismiss = { showAiEditSheet = false },
+            onSelect = { type ->
+                showAiEditSheet = false
+                val uri = currentMedia.uri
+                when (type) {
+                    AiEditType.CAPTION -> {
+                        if (aiState is AiState.NotConfigured) showAiConfigDialog = true
+                        else aiViewModel.generateCaption(uri)
+                    }
+                    AiEditType.RECOGNIZE -> {
+                        if (aiState is AiState.NotConfigured) showAiConfigDialog = true
+                        else aiViewModel.analyzeImage(uri)
+                    }
+                    AiEditType.RESTORE, AiEditType.BEAUTIFY -> {
+                        if (aiState is AiState.NotConfigured) showAiConfigDialog = true
+                        else aiViewModel.processImageEdit(uri, type)
+                    }
+                }
+            }
+        )
+    }
+
+    // AI 文案/识图进行中提示
+    if (captionResult is AiAnalysisResult.Loading || analysisResult is AiAnalysisResult.Loading) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("AI 处理中") },
+            text  = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    Text("正在请求 AI，请稍候…")
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    // AI 图片编辑进行中提示
+    if (imageEditResult is AiImageEditResult.Loading) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("AI 处理中") },
+            text  = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    Text("正在处理图片，请稍候…")
+                }
+            },
+            confirmButton = {}
         )
     }
 
@@ -283,7 +493,7 @@ fun PhotoDetailScreen(
                     .heightIn(max = 300.dp)
                     .padding(horizontal = 12.dp)
                     .navigationBarsPadding()
-                    .padding(bottom = 72.dp),
+                    .padding(bottom = 120.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = Color.Black.copy(alpha = 0.88f),
                     contentColor   = Color.White
@@ -384,69 +594,40 @@ fun PhotoDetailScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                IconButton(
+                    onClick = { if (currentMedia != null) showDeleteConfirmDialog = true }
+                ) {
+                    Icon(
+                        imageVector        = Icons.Default.Delete,
+                        contentDescription = "删除",
+                        tint               = Color.White
+                    )
+                }
             }
         }
 
         // ============================================================
-        // AI 识图触发按钮（右下角浮动，图片类型且结果未展示时显示）
+        // 底部编辑工具栏（AI 编辑 + 本地编辑 / 视频截取）
         // ============================================================
         AnimatedVisibility(
-            visible  = showBars
-                    && currentMedia?.mediaType == MediaType.IMAGE
-                    && analysisResult !is AiAnalysisResult.Success
-                    && analysisResult !is AiAnalysisResult.Error,
+            visible  = showBars && currentMedia != null,
             enter    = fadeIn(tween(150)) + slideInVertically { it },
             exit     = fadeOut(tween(150)) + slideOutVertically { it },
-            modifier = Modifier.align(Alignment.BottomEnd)
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            Box(
-                modifier = Modifier
-                    .padding(end = 16.dp, bottom = 32.dp)
-                    .navigationBarsPadding()
-            ) {
-                when (analysisResult) {
-                    is AiAnalysisResult.Loading -> {
-                        FilledTonalButton(
-                            onClick = {},
-                            enabled = false,
-                            colors  = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = Color.White.copy(alpha = 0.15f),
-                                contentColor   = Color.White
-                            )
-                        ) {
-                            CircularProgressIndicator(
-                                modifier    = Modifier.size(16.dp),
-                                color       = Color.White,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text("分析中…")
-                        }
+            currentMedia?.let { media ->
+                PhotoEditBottomBar(
+                    mediaType = media.mediaType,
+                    onAiEditClick = {
+                        if (media.mediaType == MediaType.IMAGE) showAiEditSheet = true
+                    },
+                    onLocalEditClick = { mode ->
+                        onNavigateToImageEdit(media.uri, mode)
+                    },
+                    onVideoTrimClick = {
+                        onNavigateToVideoTrim(media.uri, media.name)
                     }
-                    else -> {
-                        FilledTonalButton(
-                            onClick = {
-                                if (aiState is AiState.NotConfigured) {
-                                    showAiConfigDialog = true
-                                } else {
-                                    currentMedia?.let { aiViewModel.analyzeImage(it.uri) }
-                                }
-                            },
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = Color.White.copy(alpha = 0.15f),
-                                contentColor   = Color.White
-                            )
-                        ) {
-                            Icon(
-                                imageVector        = Icons.Default.AutoAwesome,
-                                contentDescription = null,
-                                modifier           = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text("AI 识图")
-                        }
-                    }
-                }
+                )
             }
         }
 

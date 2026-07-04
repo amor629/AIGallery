@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-    AI Gallery 应用图标背景层
-    使用 Material Blue 800 (#1565C0) 作为品牌主色调
-    自适应图标框架会将此层裁剪为当前设备的图标形状（圆形/方形/圆角方形等）
--->
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="#1565C0" />
-</shape>

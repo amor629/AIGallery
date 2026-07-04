@@ -7,10 +7,10 @@
     Android 13+ 额外支持 monochrome 层，用于 Material You 主题图标。
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 背景层：品牌蓝色纯色矩形，填充 108×108dp 画布 -->
+    <!-- 背景层：忆刻品牌插画（打开的相册 + "忆刻" 文字），已铺满 108×108dp 画布 -->
     <background android:drawable="@drawable/ic_launcher_background" />
-    <!-- 前景层：相机 + 镜头 + AI 闪光星，内容集中在中心安全区 -->
+    <!-- 前景层：背景已包含全部视觉内容，前景保持透明 -->
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <!-- 单色层（Android 13+）：相机轮廓镂空图形，用于壁纸主题着色 -->
+    <!-- 单色层（Android 13+）：打开的相册剪影，用于壁纸主题着色 -->
     <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

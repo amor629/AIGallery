@@ -15,6 +15,10 @@ interface ITagRepository {
     suspend fun saveTags(photoUri: String, tags: List<String>)
     /** 已打标照片数量（Flow） */
     fun getTaggedPhotoCount(): Flow<Int>
-    /** 清空所有标签 */
+    /** 保存某张截图的 OCR 文本（非截图无需调用） */
+    suspend fun saveOcrText(photoUri: String, text: String)
+    /** 本地检索：OCR 文本包含查询词的照片 URI 列表（免费、瞬时，替代实时 AI 扫描） */
+    suspend fun searchOcrText(query: String): List<String>
+    /** 清空所有标签与 OCR 文本 */
     suspend fun clearAll()
 }

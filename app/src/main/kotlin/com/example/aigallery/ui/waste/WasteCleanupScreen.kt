@@ -1,6 +1,8 @@
 package com.example.aigallery.ui.waste
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +28,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,6 +36,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -43,17 +48,23 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -96,6 +107,44 @@ fun WasteCleanupScreen(
         }
     }
 
+    // 通知权限（Android 13+）：仅用于展示后台扫描进度条，被拒绝不影响扫描本身正常运行
+    // （扫描由 WasteScanWorker 在后台前台服务中进行，与本页面生命周期解耦，点击后可立即离开）
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* 无论是否授权，都照常开始扫描；未授权只是看不到进度通知 */ }
+    val ensureNotificationPermission = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    val startScanWithPermissionCheck: () -> Unit = {
+        ensureNotificationPermission()
+        viewModel.startScan()
+    }
+    var showMenu by remember { mutableStateOf(false) }
+    var showRescanConfirm by remember { mutableStateOf(false) }
+
+    if (showRescanConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRescanConfirm = false },
+            title = { Text("重新扫描全部照片") },
+            text = { Text("将忽略此前的扫描记录，对全部照片重新进行 AI 废片检测。如果照片数量较多，可能需要较长时间，建议保持网络畅通。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRescanConfirm = false
+                    ensureNotificationPermission()
+                    viewModel.rescanAll()
+                }) { Text("确认重新扫描") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRescanConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
     // 底部操作栏（仅 Done + 有结果时显示）
     val doneResults = (scanState as? WasteCleanupViewModel.ScanState.Done)?.results
         ?.takeIf { it.isNotEmpty() }
@@ -110,11 +159,29 @@ fun WasteCleanupScreen(
                 },
                 title = { Text("AI 废片清理") },
                 actions = {
-                    // Done / Error 状态下显示"重新扫描"按钮
+                    // Done / Error 状态下显示扫描选项菜单
                     if (scanState is WasteCleanupViewModel.ScanState.Done ||
                         scanState is WasteCleanupViewModel.ScanState.Error) {
-                        IconButton(onClick = viewModel::startScan) {
-                            Icon(Icons.Default.Refresh, contentDescription = "重新扫描")
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "扫描选项")
+                            }
+                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("扫描新照片") },
+                                    onClick = {
+                                        showMenu = false
+                                        startScanWithPermissionCheck()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("重新扫描全部") },
+                                    onClick = {
+                                        showMenu = false
+                                        showRescanConfirm = true
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -174,7 +241,7 @@ fun WasteCleanupScreen(
         ) {
             when (val state = scanState) {
                 is WasteCleanupViewModel.ScanState.Idle ->
-                    IdleContent(onStartScan = viewModel::startScan)
+                    IdleContent(onStartScan = startScanWithPermissionCheck)
 
                 is WasteCleanupViewModel.ScanState.Scanning ->
                     ScanningContent(state = state)
@@ -189,7 +256,7 @@ fun WasteCleanupScreen(
                 is WasteCleanupViewModel.ScanState.Error ->
                     ErrorContent(
                         message  = state.message,
-                        onRetry  = viewModel::startScan
+                        onRetry  = startScanWithPermissionCheck
                     )
             }
         }

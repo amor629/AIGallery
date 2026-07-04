@@ -39,13 +39,16 @@ interface IAiConfigRepository {
     suspend fun clearConfig()
 
     /**
-     * 测试与当前配置的 API 连通性
+     * 测试 API 连通性
+     *
+     * ⚠️ 必须显式传入 baseUrl / apiKey，而不是读取 [currentConfig]：
+     *    设置页允许用户在未点击"保存配置"前先"测试连接"，这种场景下
+     *    输入框里的值和已保存的 [currentConfig] 可能不一致（比如正在修改一个过期的 Key）。
+     *    如果这里偷懒读 [currentConfig]，测的就是旧值，会让用户误以为新 Key 无效。
      *
      * 向 baseUrl 发送探测请求：
-     * - 返回 [Result.success] → 服务器可达（HTTP 200 或 401 均视为可达）
-     * - 返回 [Result.failure] → 无法连接，包含错误描述
-     *
-     * ⚠️ 调用前请确保已有配置（currentConfig != null）
+     * - 返回 [Result.success] → 服务器可达且 Key 有效（HTTP 2xx）
+     * - 返回 [Result.failure] → 无法连接，或 Key 无效（HTTP 401），包含错误描述
      */
-    suspend fun testConnectivity(): Result<Unit>
+    suspend fun testConnectivity(baseUrl: String, apiKey: String): Result<Unit>
 }

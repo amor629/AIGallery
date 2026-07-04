@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 sealed interface SmartAlbumsScanState {
@@ -95,6 +96,20 @@ class SmartAlbumsViewModel @Inject constructor(
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
         workManager.enqueueUniqueWork(PhotoTagWorker.WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+    }
+
+    /**
+     * 清空所有已打标签，重新扫描全部照片。
+     *
+     * 用途：打标逻辑是幂等的（跳过已打标照片），升级标签规则/类别后，
+     * 已经打过标的旧照片不会自动用新规则重新生成，需要用户主动清空后重新扫描才能生效。
+     */
+    fun resetAndRescan() {
+        if (aiStateManager.state.value !is AiState.Configured) return
+        viewModelScope.launch {
+            tagRepository.clearAll()
+            startScan()
+        }
     }
 
     fun selectTag(tag: String) { _selectedTag.value = tag }

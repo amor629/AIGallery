@@ -157,6 +157,7 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)
+    implementation(libs.media3.transformer)
 
     // ========== 分页加载 Paging 3 ==========
     implementation(libs.paging.runtime)
@@ -181,6 +182,12 @@ dependencies {
     // ========== 启动页 SplashScreen ==========
     // 消除冷启动白屏；在 API 31+ 上使用系统原生 SplashScreen，低版本自动模拟
     implementation(libs.androidx.core.splashscreen)
+
+    // ========== Fragment（MainActivity 需继承 FragmentActivity 才能挂载 BiometricPrompt）==========
+    implementation(libs.androidx.fragment.ktx)
+
+    // ========== 生物识别（隐藏相册入口验证：指纹/人脸/设备锁屏密码）==========
+    implementation(libs.androidx.biometric)
 
     // ========== 依赖注入 Hilt ==========
     implementation(libs.hilt.android)

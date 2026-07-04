@@ -127,46 +127,52 @@ class AiConfigRepository @Inject constructor(
 
     // ----------------------------------------------------------------
     // 连通性测试
-    // 向 baseUrl/models 发送 GET 请求，探测服务器是否可达
-    // HTTP 200 或 401 均视为"可达"（401 说明 Key 可能有误，但服务器在线）
+    // 向 baseUrl/models 发送 GET 请求，探测服务器是否可达 + Key 是否有效
+    //
+    // ⚠️ 必须使用调用方显式传入的 baseUrl/apiKey，而不是 _configState.value：
+    //    设置页允许用户在修改输入框（例如更换过期的 Key）后、点击"保存配置"之前
+    //    先点"测试连接"。如果这里读取的是上次保存的旧配置，测的就永远是旧 Key，
+    //    会让用户误以为刚填的新 Key 无效。
     // ----------------------------------------------------------------
-    override suspend fun testConnectivity(): Result<Unit> = withContext(Dispatchers.IO) {
-        val config = _configState.value
-            ?: return@withContext Result.failure(IllegalStateException("尚未配置 AI，请先保存配置"))
-
-        try {
-            // 为测试创建独立的 OkHttpClient（短超时，不影响正常使用）
-            val client = OkHttpClient.Builder()
-                .connectTimeout(CONNECTIVITY_TIMEOUT_SEC, TimeUnit.SECONDS)
-                .readTimeout(CONNECTIVITY_TIMEOUT_SEC, TimeUnit.SECONDS)
-                .build()
-
-            // 探测端点：OpenAI 兼容接口通常支持 GET /models
-            val testUrl = config.baseUrl.trimEnd('/') + "/models"
-
-            // ⚠️ Authorization header 中携带 apiKey，禁止打印此请求日志
-            val request = Request.Builder()
-                .url(testUrl)
-                .header("Authorization", "Bearer ${config.apiKey}")
-                .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                when {
-                    // 2xx：服务器在线且 Key 有效
-                    response.isSuccessful ->
-                        Result.success(Unit)
-                    // 401：服务器在线，但 API Key 无效
-                    response.code == 401 ->
-                        Result.failure(Exception("API 地址可达，但 API Key 验证失败 (HTTP 401)，请检查 Key 是否正确"))
-                    // 其他错误码
-                    else ->
-                        Result.failure(Exception("服务器返回 HTTP ${response.code}，请检查 API 地址是否正确"))
-                }
+    override suspend fun testConnectivity(baseUrl: String, apiKey: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            if (baseUrl.isBlank() || apiKey.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("请先填写 API 地址和 Key"))
             }
-        } catch (e: Exception) {
-            // 网络异常、DNS 失败、超时等
-            Result.failure(Exception("连接失败：${e.message}"))
+
+            try {
+                // 为测试创建独立的 OkHttpClient（短超时，不影响正常使用）
+                val client = OkHttpClient.Builder()
+                    .connectTimeout(CONNECTIVITY_TIMEOUT_SEC, TimeUnit.SECONDS)
+                    .readTimeout(CONNECTIVITY_TIMEOUT_SEC, TimeUnit.SECONDS)
+                    .build()
+
+                // 探测端点：OpenAI 兼容接口通常支持 GET /models
+                val testUrl = baseUrl.trimEnd('/') + "/models"
+
+                // ⚠️ Authorization header 中携带 apiKey，禁止打印此请求日志
+                val request = Request.Builder()
+                    .url(testUrl)
+                    .header("Authorization", "Bearer $apiKey")
+                    .get()
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    when {
+                        // 2xx：服务器在线且 Key 有效
+                        response.isSuccessful ->
+                            Result.success(Unit)
+                        // 401：服务器在线，但 API Key 无效
+                        response.code == 401 ->
+                            Result.failure(Exception("API 地址可达，但 API Key 验证失败 (HTTP 401)，请检查 Key 是否正确"))
+                        // 其他错误码
+                        else ->
+                            Result.failure(Exception("服务器返回 HTTP ${response.code}，请检查 API 地址是否正确"))
+                    }
+                }
+            } catch (e: Exception) {
+                // 网络异常、DNS 失败、超时等
+                Result.failure(Exception("连接失败：${e.message}"))
+            }
         }
-    }
 }

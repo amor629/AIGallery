@@ -1,6 +1,7 @@
 package com.example.aigallery
 
 import android.app.Application
+import androidx.media3.common.util.UnstableApi
 import com.example.aigallery.crash.GlobalCrashHandler
 import dagger.hilt.android.HiltAndroidApp
 
@@ -11,6 +12,7 @@ import dagger.hilt.android.HiltAndroidApp
  * - 编译时 KSP 会根据此注解生成 Hilt 所需的依赖图代码
  * - 运行时 Hilt 在 Application.onCreate() 之前完成组件初始化
  */
+@UnstableApi
 @HiltAndroidApp
 class AIGalleryApp : Application() {
 

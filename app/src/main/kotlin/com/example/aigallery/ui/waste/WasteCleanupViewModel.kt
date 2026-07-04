@@ -4,18 +4,25 @@ import android.content.IntentSender
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.example.aigallery.ai.AiState
 import com.example.aigallery.ai.AiStateManager
-import com.example.aigallery.domain.model.MediaItem
-import com.example.aigallery.domain.model.MediaType
 import com.example.aigallery.domain.model.WastePhoto
-import com.example.aigallery.domain.repository.IAiSearchRepository
 import com.example.aigallery.domain.repository.IMediaRepository
+import com.example.aigallery.domain.repository.IWasteRepository
+import com.example.aigallery.work.WasteScanWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -23,16 +30,18 @@ import javax.inject.Inject
 /**
  * AI 废片清理 ViewModel
  *
+ * 扫描本身由 [WasteScanWorker]（WorkManager 前台任务）完成，与本 ViewModel/页面生命周期解耦：
+ * 点击"开始扫描"后可立即离开当前页面去看相册，扫描仍会在后台继续；每批结果实时持久化到 Room，
+ * [scanState] 通过组合 WorkManager 任务状态 + 本地扫描记录 + 最新媒体库，
+ * 无论何时重新进入本页面都会自动展示最新（含进行中）的结果。
+ *
  * 状态机：Idle → Scanning → Done / Error
- * - Idle：等待用户点击"开始扫描"
- * - Scanning：分批调用 [IAiSearchRepository.analyzeWasteBatch]，实时更新进度
- * - Done：扫描完毕，持有废片列表；支持选中/删除
- * - Error：AI 未配置或网络异常
  */
 @HiltViewModel
 class WasteCleanupViewModel @Inject constructor(
     private val mediaRepository: IMediaRepository,
-    private val aiSearchRepository: IAiSearchRepository,
+    private val wasteRepository: IWasteRepository,
+    private val workManager: WorkManager,
     private val aiStateManager: AiStateManager
 ) : ViewModel() {
 
@@ -56,8 +65,32 @@ class WasteCleanupViewModel @Inject constructor(
         data class Error(val message: String) : ScanState
     }
 
-    private val _scanState = MutableStateFlow<ScanState>(ScanState.Idle)
-    val scanState: StateFlow<ScanState> = _scanState.asStateFlow()
+    val scanState: StateFlow<ScanState> = combine(
+        workManager.getWorkInfosForUniqueWorkFlow(WasteScanWorker.WORK_NAME),
+        wasteRepository.getWasteResults(),
+        mediaRepository.getAllMedia()
+    ) { infos, wasteRecords, allMedia ->
+        val mediaByUri = allMedia.associateBy { it.uri.toString() }
+        val wastePhotos = wasteRecords.mapNotNull { record ->
+            val reason = record.reason ?: return@mapNotNull null
+            val media  = mediaByUri[record.uri] ?: return@mapNotNull null
+            WastePhoto(media, reason)
+        }
+        when (val info = infos.firstOrNull()) {
+            null -> ScanState.Idle
+            else -> when (info.state) {
+                WorkInfo.State.RUNNING, WorkInfo.State.ENQUEUED -> ScanState.Scanning(
+                    scanned        = info.progress.getInt(WasteScanWorker.KEY_SCANNED, 0),
+                    total          = info.progress.getInt(WasteScanWorker.KEY_TOTAL, 0),
+                    found          = wastePhotos.size,
+                    partialResults = wastePhotos
+                )
+                WorkInfo.State.FAILED -> ScanState.Error("扫描失败，请重试")
+                WorkInfo.State.SUCCEEDED -> ScanState.Done(wastePhotos)
+                else -> ScanState.Idle
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ScanState.Idle)
 
     // ---- 多选状态 ----
     private val _selectedUris = MutableStateFlow<Set<Uri>>(emptySet())
@@ -71,84 +104,31 @@ class WasteCleanupViewModel @Inject constructor(
     // 扫描逻辑
     // ----------------------------------------------------------------
 
-    /** 开始扫描（最多扫描 [MAX_SCAN] 张图片） */
+    /**
+     * 开始扫描（幂等：只扫描此前未扫描过的照片，最多 [WasteScanWorker] 单次处理上限张）。
+     * 调用后立即返回，实际扫描在后台 WorkManager 任务中进行，可放心离开当前页面。
+     */
     fun startScan() {
-        if (aiStateManager.state.value !is AiState.Configured) {
-            _scanState.value = ScanState.Error("AI 未配置，请先在设置页填写 API 地址和 Key")
-            return
-        }
-        viewModelScope.launch {
-            _scanState.value = ScanState.Scanning(0, 0, 0, emptyList())
-            _selectedUris.value = emptySet()
-            try {
-                val allImages = mediaRepository.getAllMedia().first()
-                    .filter { it.mediaType == MediaType.IMAGE }
-                    .take(MAX_SCAN)
-
-                if (allImages.isEmpty()) {
-                    _scanState.value = ScanState.Done(emptyList())
-                    return@launch
-                }
-
-                val results = mutableListOf<WastePhoto>()
-
-                // ① 截图：直接用文件夹元数据识别，不需要调用 AI
-                val screenshots = allImages.filter { it.isScreenshot }
-                    .map { WastePhoto(it, "截图") }
-                results.addAll(screenshots)
-
-                // ② 非截图照片：用 AI 识别模糊 / 闭眼 / 重复
-                //    重要：按拍摄时间排序后将"时间相近"（3秒内）的照片放在同一批次，
-                //    这样连拍/重复拍的照片会在同一批次内被模型比对，大幅提升重复检测率
-                val nonScreenshots = allImages
-                    .filter { !it.isScreenshot }
-                    .sortedByDescending { if (it.dateTaken > 0) it.dateTaken else it.dateAdded }
-
-                val batches = buildTemporalBatches(nonScreenshots)
-                var scanned = 0
-
-                for (batch in batches) {
-                    val batchResults = aiSearchRepository.analyzeWasteBatch(batch)
-                    results.addAll(batchResults)
-                    scanned += batch.size
-                    _scanState.value = ScanState.Scanning(
-                        scanned  = scanned + screenshots.size,
-                        total    = allImages.size,
-                        found    = results.size,
-                        partialResults = results.toList()
-                    )
-                }
-                _scanState.value = ScanState.Done(results.toList())
-            } catch (e: Exception) {
-                _scanState.value = ScanState.Error(e.message ?: "扫描失败，请重试")
-            }
-        }
+        if (aiStateManager.state.value !is AiState.Configured) return
+        _selectedUris.value = emptySet()
+        val request = OneTimeWorkRequestBuilder<WasteScanWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        workManager.enqueueUniqueWork(WasteScanWorker.WORK_NAME, ExistingWorkPolicy.KEEP, request)
     }
 
     /**
-     * 将照片列表按时间临近度分批：
-     * - 拍摄时间相差 ≤ [DUPLICATE_WINDOW_MS] 的照片放入同一批次（提升重复检测率）
-     * - 每批最多 [BATCH_SIZE] 张，超出则新建批次
+     * 清空所有扫描记录，重新扫描全部照片。
+     *
+     * 用途：扫描逻辑是幂等的（跳过已扫描照片），如果想让 AI 重新判断全部照片
+     * （比如怀疑之前漏判），需要用户主动清空后重新扫描。
      */
-    private fun buildTemporalBatches(items: List<MediaItem>): List<List<MediaItem>> {
-        if (items.isEmpty()) return emptyList()
-        val batches = mutableListOf<MutableList<MediaItem>>()
-        var currentBatch = mutableListOf<MediaItem>()
-        var prevTime = Long.MIN_VALUE
-
-        for (item in items) {
-            val t = if (item.dateTaken > 0) item.dateTaken else item.dateAdded
-            val isClose = prevTime != Long.MIN_VALUE && (prevTime - t) <= DUPLICATE_WINDOW_MS
-            if (currentBatch.isEmpty() || (isClose && currentBatch.size < BATCH_SIZE)) {
-                currentBatch.add(item)
-            } else {
-                batches.add(currentBatch)
-                currentBatch = mutableListOf(item)
-            }
-            prevTime = t
+    fun rescanAll() {
+        if (aiStateManager.state.value !is AiState.Configured) return
+        viewModelScope.launch {
+            wasteRepository.clearAll()
+            startScan()
         }
-        if (currentBatch.isNotEmpty()) batches.add(currentBatch)
-        return batches
     }
 
     // ----------------------------------------------------------------
@@ -183,25 +163,13 @@ class WasteCleanupViewModel @Inject constructor(
         _deleteRequest.value = null
     }
 
-    /** 删除成功后，从结果列表移除已删除项目 */
+    /** 删除成功后，从扫描记录中移除已删除项目（MediaStore 中已不存在，[scanState] 也会自动过滤掉） */
     fun afterDeletion() {
         val deletedUris = _selectedUris.value
-        val current = _scanState.value as? ScanState.Done ?: run {
-            _deleteRequest.value = null
-            return
+        viewModelScope.launch {
+            wasteRepository.removeResults(deletedUris.map { it.toString() })
         }
-        val remaining = current.results.filter { it.mediaItem.uri !in deletedUris }
-        _scanState.value = ScanState.Done(remaining)
         _selectedUris.value = emptySet()
         _deleteRequest.value = null
-    }
-
-    companion object {
-        /** 单次扫描最多处理图片数，平衡 API 消耗与覆盖率 */
-        private const val MAX_SCAN = 90
-        /** 每批发送给视觉 AI 的图片数（不超过 3，控制 Token）*/
-        private const val BATCH_SIZE = 3
-        /** 判断为"时间相近"（可能是连拍重复）的时间窗口：3 秒 */
-        private const val DUPLICATE_WINDOW_MS = 3_000L
     }
 }

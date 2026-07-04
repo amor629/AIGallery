@@ -192,14 +192,28 @@ class SettingsViewModel @Inject constructor(
     // ----------------------------------------------------------------
 
     /**
-     * 向已配置的 API 地址发送探测请求
+     * 向输入框中当前填写的 API 地址 + Key 发送探测请求（而不是已保存的旧配置）
      * 通过 snackbarMessage 告知用户测试结果
+     *
+     * ⚠️ 必须测试"输入框里的值"，而不是"上次保存的值"：
+     *    用户更换过期 Key 后，习惯先点"测试连接"确认新 Key 有效，再点"保存配置"。
+     *    如果这里测的是旧配置，新 Key 永远测不到，会造成"明明填对了却总说 401"的假象。
+     *    apiKey 输入框保存成功后会被清空（安全考虑），此时视为"沿用已保存的 Key"。
      */
     fun testConnectivity() {
+        val state = _inputState.value
+        val baseUrl = state.baseUrlInput.trim()
+        val apiKey = state.apiKeyInput.trim().ifBlank { repository.currentConfig?.apiKey ?: "" }
+
+        if (baseUrl.isBlank() || apiKey.isBlank()) {
+            _inputState.update { it.copy(snackbarMessage = "请先填写 API 地址和 Key，再测试连接") }
+            return
+        }
+
         viewModelScope.launch {
             _inputState.update { it.copy(isTesting = true, snackbarMessage = null) }
 
-            val result = repository.testConnectivity()
+            val result = repository.testConnectivity(baseUrl = baseUrl, apiKey = apiKey)
 
             _inputState.update {
                 it.copy(

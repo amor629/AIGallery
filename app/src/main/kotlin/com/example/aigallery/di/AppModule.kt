@@ -5,22 +5,34 @@ import androidx.room.Room
 import androidx.work.WorkManager
 import com.example.aigallery.ai.AiApiClient
 import com.example.aigallery.data.ai.AiChatService
+import com.example.aigallery.data.ai.AiImageEditService
 import com.example.aigallery.data.ai.AiImageRepositoryImpl
 import com.example.aigallery.data.ai.AiSearchRepositoryImpl
 import com.example.aigallery.data.local.db.AppDatabase
+import com.example.aigallery.data.local.db.HiddenPhotoDao
+import com.example.aigallery.data.local.db.PhotoOcrDao
 import com.example.aigallery.data.local.db.PhotoTagDao
+import com.example.aigallery.data.local.db.WastePhotoDao
+import com.example.aigallery.data.local.hidden.HiddenPhotoRepositoryImpl
 import com.example.aigallery.data.local.tag.TagRepositoryImpl
+import com.example.aigallery.data.local.waste.WasteRepositoryImpl
+import com.example.aigallery.data.ai.AiImageEditRepositoryImpl
+import com.example.aigallery.data.mediastore.MediaSaveRepositoryImpl
 import com.example.aigallery.data.mediastore.MediaStoreRepository
 import com.example.aigallery.data.preferences.AiConfigRepository
 import com.example.aigallery.data.preferences.AppPreferencesRepositoryImpl
 import com.example.aigallery.data.preferences.ThemePreferencesRepository
 import com.example.aigallery.domain.repository.IAppPreferencesRepository
 import com.example.aigallery.domain.repository.IAiConfigRepository
+import com.example.aigallery.domain.repository.IAiImageEditRepository
 import com.example.aigallery.domain.repository.IAiImageRepository
 import com.example.aigallery.domain.repository.IAiSearchRepository
+import com.example.aigallery.domain.repository.IMediaSaveRepository
+import com.example.aigallery.domain.repository.IHiddenPhotoRepository
 import com.example.aigallery.domain.repository.IMediaRepository
 import com.example.aigallery.domain.repository.ITagRepository
 import com.example.aigallery.domain.repository.IThemeRepository
+import com.example.aigallery.domain.repository.IWasteRepository
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import dagger.Binds
@@ -111,6 +123,38 @@ abstract class AppModule {
         impl: AppPreferencesRepositoryImpl
     ): IAppPreferencesRepository
 
+    /**
+     * 将接口 IHiddenPhotoRepository 绑定到 HiddenPhotoRepositoryImpl
+     * GalleryViewModel（隐藏操作）与 HiddenAlbumViewModel（浏览/恢复）共用此接口
+     */
+    @Binds
+    @Singleton
+    abstract fun bindHiddenPhotoRepository(
+        impl: HiddenPhotoRepositoryImpl
+    ): IHiddenPhotoRepository
+
+    /**
+     * 将接口 IWasteRepository 绑定到 WasteRepositoryImpl
+     * WasteScanWorker（后台扫描写入）与 WasteCleanupViewModel（UI 读取）共用此接口
+     */
+    @Binds
+    @Singleton
+    abstract fun bindWasteRepository(
+        impl: WasteRepositoryImpl
+    ): IWasteRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindMediaSaveRepository(
+        impl: MediaSaveRepositoryImpl
+    ): IMediaSaveRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindAiImageEditRepository(
+        impl: AiImageEditRepositoryImpl
+    ): IAiImageEditRepository
+
     companion object {
 
         /**
@@ -163,6 +207,15 @@ abstract class AppModule {
         fun provideAiChatService(retrofit: Retrofit): AiChatService =
             retrofit.create(AiChatService::class.java)
 
+        /**
+         * 提供 AiImageEditService（Retrofit 动态代理）
+         * 注入到 [AiImageEditRepositoryImpl]，用于老照片修复/AI美化
+         */
+        @Provides
+        @Singleton
+        fun provideAiImageEditService(retrofit: Retrofit): AiImageEditService =
+            retrofit.create(AiImageEditService::class.java)
+
         /** Room 数据库（单例） */
         @Provides
         @Singleton
@@ -175,6 +228,21 @@ abstract class AppModule {
         @Provides
         @Singleton
         fun providePhotoTagDao(db: AppDatabase): PhotoTagDao = db.photoTagDao()
+
+        /** PhotoOcr DAO（从数据库实例获取，持久化截图 OCR 文本用于本地搜索） */
+        @Provides
+        @Singleton
+        fun providePhotoOcrDao(db: AppDatabase): PhotoOcrDao = db.photoOcrDao()
+
+        /** HiddenPhoto DAO（从数据库实例获取，隐藏相册索引） */
+        @Provides
+        @Singleton
+        fun provideHiddenPhotoDao(db: AppDatabase): HiddenPhotoDao = db.hiddenPhotoDao()
+
+        /** WastePhoto DAO（从数据库实例获取，后台废片扫描记录） */
+        @Provides
+        @Singleton
+        fun provideWastePhotoDao(db: AppDatabase): WastePhotoDao = db.wastePhotoDao()
 
         /** WorkManager 单例（供 SettingsViewModel 调度打标任务使用） */
         @Provides

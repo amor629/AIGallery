@@ -13,13 +13,21 @@ import com.example.aigallery.ai.AiStateManager
 import com.example.aigallery.data.mediastore.MediaPagingSource
 import com.example.aigallery.domain.model.MediaItem
 import com.example.aigallery.domain.model.MediaType
+import com.example.aigallery.domain.model.PhotoTagTaxonomy
 import com.example.aigallery.domain.model.SearchCriteria
 import com.example.aigallery.domain.model.SearchMediaType
 import com.example.aigallery.domain.model.TimelineItem
+import com.example.aigallery.data.local.db.HiddenPhotoEntity
 import com.example.aigallery.domain.repository.IAiSearchRepository
+import com.example.aigallery.domain.repository.IHiddenPhotoRepository
 import com.example.aigallery.domain.repository.IMediaRepository
+import com.example.aigallery.domain.repository.ITagRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,12 +35,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 
 // ============================================================
@@ -104,6 +117,8 @@ sealed interface GalleryUiState {
 class GalleryViewModel @Inject constructor(
     private val mediaRepository: IMediaRepository,
     private val aiSearchRepository: IAiSearchRepository,
+    private val tagRepository: ITagRepository,
+    private val hiddenPhotoRepository: IHiddenPhotoRepository,
     private val aiStateManager: AiStateManager
 ) : ViewModel() {
 
@@ -399,6 +414,63 @@ class GalleryViewModel @Inject constructor(
     }
 
     // ----------------------------------------------------------------
+    // 隐藏相册操作
+    // ----------------------------------------------------------------
+
+    /**
+     * 隐藏操作进行中的批次：已复制到私有目录、等待用户在系统弹窗中确认删除原文件。
+     * 用户确认 → [onHideDeleteResult] 落库；用户取消 → 回滚已复制的文件。
+     */
+    private var pendingHideBatch: List<HiddenPhotoEntity>? = null
+
+    /** 隐藏流程的系统删除确认弹窗请求（语义与 [deleteRequest] 一致，但走隐藏专用的确认回调） */
+    private val _hideDeleteRequest = MutableStateFlow<IntentSender?>(null)
+    val hideDeleteRequest: StateFlow<IntentSender?> = _hideDeleteRequest.asStateFlow()
+
+    /**
+     * 请求隐藏当前所有选中的媒体
+     *
+     * 流程：
+     * 1. 把选中的 URI 还原为完整 [MediaItem]（含文件名/尺寸/时长等，恢复时需要）
+     * 2. 复制文件到应用私有目录（[IHiddenPhotoRepository.prepareHide]），此步不触碰原文件
+     * 3. 构建系统删除确认弹窗（删除 MediaStore 原文件），推送给 UI 启动
+     * 4. 用户确认/取消的结果由 [onHideDeleteResult] 处理
+     */
+    fun requestHideSelected() {
+        val uris = _selectedUris.value
+        if (uris.isEmpty()) return
+        val items = allUnfilteredMedia.value.filter { it.uri in uris }
+        if (items.isEmpty()) return
+        viewModelScope.launch {
+            val prepared = hiddenPhotoRepository.prepareHide(items)
+            if (prepared.isEmpty()) return@launch
+            pendingHideBatch = prepared.map { it.entity }
+            _hideDeleteRequest.value = hiddenPhotoRepository.buildDeleteRequest(prepared.map { it.originalUri })
+        }
+    }
+
+    /** 系统删除弹窗已启动后，清除请求（防止屏幕旋转重复触发） */
+    fun clearHideDeleteRequest() {
+        _hideDeleteRequest.value = null
+    }
+
+    /**
+     * 系统删除确认弹窗返回结果后调用
+     * @param confirmed true=用户确认删除原文件（隐藏正式生效，落库）；false=用户取消（回滚已复制文件）
+     */
+    fun onHideDeleteResult(confirmed: Boolean) {
+        val batch = pendingHideBatch
+        pendingHideBatch = null
+        _hideDeleteRequest.value = null
+        if (batch == null) return
+        viewModelScope.launch {
+            if (confirmed) hiddenPhotoRepository.commitHide(batch)
+            else hiddenPhotoRepository.rollbackHide(batch)
+            clearSelection()
+        }
+    }
+
+    // ----------------------------------------------------------------
     // 按月分组辅助方法（供 GalleryScreen Step 3 使用）
     // ----------------------------------------------------------------
 
@@ -491,11 +563,15 @@ class GalleryViewModel @Inject constructor(
         _searchInput.value = text
     }
 
+    /** 当前正在执行的搜索协程；每次发起新搜索前先取消旧的，避免新旧搜索结果互相覆盖 */
+    private var searchJob: Job? = null
+
     /**
      * 退出搜索模式，恢复时间轴
      * 调用时机：按返回键、点击关闭按钮
      */
     fun deactivateSearch() {
+        searchJob?.cancel()
         _isSearchActive.value = false
         _searchState.value = SearchUiState.Idle
         _searchInput.value = ""
@@ -515,11 +591,17 @@ class GalleryViewModel @Inject constructor(
     fun performSearch(query: String) {
         val trimmed = query.trim()
         if (trimmed.isEmpty()) {
+            searchJob?.cancel()
             _searchState.value = SearchUiState.Idle
             return
         }
 
-        viewModelScope.launch {
+        // 关键修复：取消上一次尚未完成的搜索协程。
+        // 视觉扫描涉及多轮异步 AI 请求，耗时较长；如果用户在结果返回前又发起了新搜索，
+        // 旧搜索的协程若不取消，会在后台继续跑完并用"旧查询的结果"覆盖新查询的 _searchState，
+        // 导致界面上显示的结果混入了完全不相关的上一次搜索内容。
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             _searchState.value = SearchUiState.Loading
 
             // 全量未筛选媒体列表（Eagerly 活跃，始终有数据）
@@ -551,39 +633,89 @@ class GalleryViewModel @Inject constructor(
                     return@launch
                 }
 
-                // ③ 视觉扫描：最多扫描 30 张（最新的优先，控制 API 调用次数和费用）
-                val MAX_SCAN = 30
-                val candidates = if (metadataFiltered.isNotEmpty()) {
-                    // 有元数据预筛选结果时，只在候选集里做视觉扫描
-                    metadataFiltered.take(MAX_SCAN)
-                } else {
-                    // 无元数据限制时，取最新 30 张
-                    allItems.take(MAX_SCAN)
-                }
-
+                // ③ 视觉扫描：混合策略，避免每次搜索都要花钱重新扫全部照片，也避免重复扫描已分类照片引入误判
+                //    第一步：复用「AI 智能相册」后台建好的本地索引——标签 + 截图 OCR 文本（本地 Room，免费、瞬时）
+                //    第二步：仅对完全没有被打过标的照片（新照片 / 打标任务尚未处理到的照片）做实时 AI 兜底判断，
+                //           有限并发（同废片清理/智能打标一致）；查询词命中固定分类时复用打标流程本身
+                //           （更准，见 [findTaxonomyTag]），否则走开放式视觉匹配
+                val candidatePool = metadataFiltered.ifEmpty { allItems }
                 val visualResults = mutableListOf<MediaItem>()
-                var scanned = 0
 
-                // 每批 3 张（节省 Token，同时保证多模态 API 不超限）
-                for (batch in candidates.chunked(3)) {
-                    val hitIndices = aiSearchRepository.visualSearchBatch(batch, visualQuery)
-                    hitIndices.forEach { idx ->
-                        if (idx in batch.indices) visualResults.add(batch[idx])
-                    }
-                    scanned += batch.size
-
-                    // 实时更新 UI：用户能看到进度和已发现的图片
+                val tagMatched = matchVisualQueryLocally(visualQuery, candidatePool)
+                if (tagMatched.isNotEmpty()) {
+                    visualResults.addAll(tagMatched)
                     _searchState.value = SearchUiState.VisualSearching(
                         found          = visualResults.size,
-                        scanned        = scanned,
-                        total          = candidates.size,
+                        scanned        = 0,
+                        total          = 0,
                         partialResults = visualResults.toList()
                     )
                 }
 
+                // 实时扫描兜底集合：只应包含"完全没有被打过标"的照片（新照片 / 打标任务尚未处理到的照片）。
+                //
+                // 关键修复：之前这里只排除了"命中当前查询"的照片，导致已经被打上其他正确标签的照片
+                // （比如已经归类为「人像/自拍」的自拍照）在搜索任何不相关的词（如"短信"）时，
+                // 仍然会被重新丢给 AI 做一次性视觉判断——而 AI 的单次判断不是 100% 准确，
+                // 这就给了"人像被误判为短信命中"这类假阳性反复出现的机会。
+                // 现在改为：只要照片已经被标签系统处理过（无论打的是什么标签），就信任这个分类结果，
+                // 不再重复扫描；只有还没被打过任何标签的照片，才需要用实时 AI 扫描兜底判断。
+                val allTaggedUris = tagRepository.getAllTaggedUris().toSet()
+                val remaining = candidatePool
+                    .filter { it !in tagMatched && it.uri.toString() !in allTaggedUris }
+                    .take(MAX_LIVE_SCAN)
+
+                // 查询词若命中固定分类体系（如"短信""聊天记录"），说明这类照片本该由后台打标覆盖。
+                // 对未打标照片改用与后台打标完全一致的分类流程（含 OCR 兜底）判断，而不是开放式的
+                // "是否匹配"视觉判断——后者对文字类查询（短信/聊天记录等）误判率明显更高
+                // （容易把自拍、零食包装等"画面里有文字"的照片误判为命中）。
+                // 顺带把结果持久化进标签库，相当于免费为智能相册补齐了这批照片的分类。
+                val taxonomyTag = findTaxonomyTag(visualQuery)
+
+                if (remaining.isNotEmpty()) {
+                    var scanned = 0
+                    val progressMutex = Mutex()
+                    val semaphore = Semaphore(SEARCH_CONCURRENCY)
+
+                    coroutineScope {
+                        remaining.chunked(SEARCH_BATCH_SIZE).map { batch ->
+                            async {
+                                semaphore.withPermit {
+                                    val hits = if (taxonomyTag != null) {
+                                        val tagResults = aiSearchRepository.tagPhotoBatch(batch)
+                                        tagResults.forEach { r ->
+                                            tagRepository.saveTags(r.uri, r.tags)
+                                            r.ocrText?.let { tagRepository.saveOcrText(r.uri, it) }
+                                        }
+                                        val hitUris = tagResults
+                                            .filter { taxonomyTag in it.tags }
+                                            .map { it.uri }
+                                            .toSet()
+                                        batch.filter { it.uri.toString() in hitUris }
+                                    } else {
+                                        val hitIndices = aiSearchRepository.visualSearchBatch(batch, visualQuery)
+                                        hitIndices.mapNotNull { idx -> batch.getOrNull(idx) }
+                                    }
+                                    progressMutex.withLock {
+                                        visualResults.addAll(hits)
+                                        scanned += batch.size
+                                        // 实时更新 UI：用户能看到进度和已发现的图片
+                                        _searchState.value = SearchUiState.VisualSearching(
+                                            found          = visualResults.size,
+                                            scanned        = scanned,
+                                            total          = remaining.size,
+                                            partialResults = visualResults.toList()
+                                        )
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+
                 // ④ 扫描完毕
                 _searchState.value = if (visualResults.isEmpty()) SearchUiState.Empty
-                                     else SearchUiState.Success(visualResults)
+                                     else SearchUiState.Success(visualResults.distinct())
 
             } else {
                 // ---- 离线路径：仅文件名 / 相册名模糊匹配 ----
@@ -597,6 +729,49 @@ class GalleryViewModel @Inject constructor(
     // ----------------------------------------------------------------
     // 搜索辅助：本地过滤
     // ----------------------------------------------------------------
+
+    /**
+     * 用视觉查询词匹配本地已建好的搜索索引（Room：AI 标签 + 截图 OCR 文本），免费、瞬时。
+     *
+     * 两路来源取并集：
+     * 1. 标签：标签名与查询词互为子串即视为命中（如查询"海边日落"命中标签"海滩"，需长度≥2 避免误伤单字）
+     * 2. OCR 文本：截图识别出的文字中包含查询词即视为命中（如查询"验证码"命中含该文字的短信截图）
+     * 命中集合与 [candidates] 取交集（保证仍满足日期/相册等元数据过滤）直接作为搜索结果，
+     * 不再消耗一次 AI 调用——这是相册数量很大时最主要的省钱/提速手段，
+     * 也是让搜索结果稳定可复现（不受实时 AI 单次判断的偶发误差影响）的关键。
+     */
+    private suspend fun matchVisualQueryLocally(
+        visualQuery: String,
+        candidates: List<MediaItem>
+    ): List<MediaItem> {
+        val albums = tagRepository.getTagAlbums().first()
+        val matchedTags = albums.map { it.tag }.filter { tag ->
+            tag.length >= 2 && (visualQuery.contains(tag) || tag.contains(visualQuery))
+        }
+
+        val matchedUris = mutableSetOf<String>()
+        for (tag in matchedTags) {
+            matchedUris.addAll(tagRepository.getPhotoUrisByTag(tag).first())
+        }
+        matchedUris.addAll(tagRepository.searchOcrText(visualQuery))
+
+        if (matchedUris.isEmpty()) return emptyList()
+        // 保持 candidates 原有顺序（通常按时间新→旧），而不是 Set 的无序排列
+        return candidates.filter { it.uri.toString() in matchedUris }
+    }
+
+    /**
+     * 判断查询词是否落在固定分类体系（[PhotoTagTaxonomy]）内，若是则返回对应分类名。
+     *
+     * 用途：查询词若命中固定分类（如"短信""聊天记录"），说明这类照片本该被后台打标覆盖；
+     * 对于还没打过标的照片，与其用开放式的"是否匹配"视觉判断（容易产生误判，
+     * 比如把自拍/零食包装误判为"短信"），不如直接复用与后台打标完全相同的分类流程
+     * （含 OCR 兜底），让结果口径与智能相册保持一致，准确率也更高。
+     */
+    private fun findTaxonomyTag(visualQuery: String): String? =
+        PhotoTagTaxonomy.CATEGORIES.firstOrNull { tag ->
+            tag.length >= 2 && (visualQuery.contains(tag) || tag.contains(visualQuery))
+        }
 
     /**
      * 将 AI 解析的结构化条件应用到媒体列表
@@ -711,6 +886,15 @@ class GalleryViewModel @Inject constructor(
             val intentSender = mediaRepository.buildDeleteRequest(uris)
             _deleteRequest.value = intentSender
         }
+    }
+
+    companion object {
+        /** 标签未命中时，实时 AI 视觉扫描兜底的最大候选数（控制单次搜索的耗时与花费） */
+        private const val MAX_LIVE_SCAN = 300
+        /** 每批发送给视觉 AI 的图片数，与废片清理/智能打标保持一致 */
+        private const val SEARCH_BATCH_SIZE = 5
+        /** 同时在途的批次请求数，与废片清理/智能打标保持一致 */
+        private const val SEARCH_CONCURRENCY = 5
     }
 
 }

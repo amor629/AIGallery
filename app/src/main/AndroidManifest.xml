@@ -3,7 +3,8 @@
     AndroidManifest.xml — 应用清单
     声明权限、组件（Activity）和应用入口
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- ======================================================
          媒体读取权限（Android 13+ 细粒度权限）
@@ -22,6 +23,17 @@
          ====================================================== -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- ======================================================
+         后台任务通知权限（AI 智能打标 / AI 废片扫描 进度条）
+         - POST_NOTIFICATIONS：Android 13+ 显示通知需运行时授权
+         - FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC：
+           WorkManager 在 Android 14+ 提升为前台任务时需声明的服务类型权限，
+           降低系统在长耗时打标/扫描过程中提前杀死任务的概率
+         ====================================================== -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
     <application
         android:name=".AIGalleryApp"
         android:allowBackup="true"
@@ -34,12 +46,47 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.AIGallery.Starting">
             <!-- 应用启动入口 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                ⚠️ 声明"可查看图片/视频"能力，是本 App 能出现在系统
+                "默认应用/打开方式"选择列表中的必要条件（此前完全没有声明，
+                系统自然不会把它作为候选项，这也是"设置里找不到忆刻"的根本原因）。
+
+                两个 <intent-filter> 分开写（而非一个 filter 里塞两个 <data>）：
+                Android 对同一 filter 内的多个 <data> 是"叠加匹配"而非"任一匹配"，
+                容易匹配到非预期的组合，拆成两个 filter 更安全可靠。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+
+            <!-- 接收其他 App"分享"过来的单张图片/视频（如微信/文件管理器的"分享"菜单）-->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
 
@@ -52,6 +99,32 @@
             android:name=".crash.CrashActivity"
             android:exported="false"
             android:theme="@style/Theme.AIGallery" />
+
+        <!--
+            WorkManager 内置的前台服务组件，用于承载 PhotoTagWorker 的 setForeground() 通知。
+            Android 14+（本项目 minSdk）要求每个前台服务必须在清单中声明服务类型，
+            否则 setForeground() 会抛出 InvalidForegroundServiceTypeException 导致闪退。
+            这里用 tools:node="merge" 把类型合并进 WorkManager 库自带的 <service> 声明。
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!--
+            FileProvider：把"隐藏相册"私有目录（.hidden_photos/）里的文件包装成 content:// URI，
+            供 Coil 加载缩略图、详情页播放视频、AI 识图等复用现有基于 Uri 的逻辑。
+            exported=false + grantUriPermissions=true：仅本 App 可用，不对外暴露。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

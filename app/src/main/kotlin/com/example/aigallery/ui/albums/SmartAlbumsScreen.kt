@@ -1,6 +1,10 @@
 ﻿package com.example.aigallery.ui.albums
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -26,10 +30,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,18 +45,24 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -69,7 +82,8 @@ import com.example.aigallery.domain.model.MediaItem
 @Composable
 fun SmartAlbumsScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToDetail: (MediaItem) -> Unit = {},
+    // 第二个参数是"点击时所在的标签相册列表"，用于详情页限定左右滑动范围为该标签下的照片
+    onNavigateToDetail: (MediaItem, List<MediaItem>) -> Unit = { _, _ -> },
     viewModel: SmartAlbumsViewModel = hiltViewModel()
 ) {
     val tagAlbums   by viewModel.tagAlbums.collectAsStateWithLifecycle()
@@ -77,7 +91,44 @@ fun SmartAlbumsScreen(
     val photos      by viewModel.photosForTag.collectAsStateWithLifecycle()
     val scanState   by viewModel.scanState.collectAsStateWithLifecycle()
 
+    // 通知权限（Android 13+）：仅用于展示打标后台进度条，被拒绝不影响打标本身正常运行
+    val context = LocalContext.current
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* 无论是否授权，都照常开始扫描；未授权只是看不到进度通知 */ }
+    val ensureNotificationPermission = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    val startScanWithPermissionCheck: () -> Unit = {
+        ensureNotificationPermission()
+        viewModel.startScan()
+    }
+    var showMenu by remember { mutableStateOf(false) }
+    var showResetConfirm by remember { mutableStateOf(false) }
+
     BackHandler(enabled = selectedTag != null) { viewModel.clearTag() }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("清空重新分类") },
+            text = { Text("将清空所有已生成的标签，并对全部照片重新分类。如果照片数量较多，可能需要较长时间，建议保持网络畅通。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetConfirm = false
+                    ensureNotificationPermission()
+                    viewModel.resetAndRescan()
+                }) { Text("确认清空并重新分类") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text("取消") }
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -94,8 +145,26 @@ fun SmartAlbumsScreen(
                 },
                 actions = {
                     if (selectedTag == null && scanState !is SmartAlbumsScanState.Scanning) {
-                        IconButton(onClick = viewModel::startScan) {
-                            Icon(Icons.Default.Refresh, contentDescription = "重新扫描")
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "扫描选项")
+                            }
+                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("扫描新照片") },
+                                    onClick = {
+                                        showMenu = false
+                                        startScanWithPermissionCheck()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("清空重新分类") },
+                                    onClick = {
+                                        showMenu = false
+                                        showResetConfirm = true
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -108,18 +177,18 @@ fun SmartAlbumsScreen(
                     // 扫描进度条（扫描中或出错时显示）
                     when (val state = scanState) {
                         is SmartAlbumsScanState.Scanning -> ScanningBanner()
-                        is SmartAlbumsScanState.Error    -> ErrorBanner(state.message, viewModel::startScan)
+                        is SmartAlbumsScanState.Error    -> ErrorBanner(state.message, startScanWithPermissionCheck)
                         else -> {}
                     }
                     TagAlbumGrid(
                         albums      = tagAlbums,
                         scanState   = scanState,
                         onTagClick  = viewModel::selectTag,
-                        onStartScan = viewModel::startScan
+                        onStartScan = startScanWithPermissionCheck
                     )
                 }
             } else {
-                PhotoGrid(photos = photos, onPhotoClick = onNavigateToDetail)
+                PhotoGrid(photos = photos, onPhotoClick = { onNavigateToDetail(it, photos) })
             }
         }
     }

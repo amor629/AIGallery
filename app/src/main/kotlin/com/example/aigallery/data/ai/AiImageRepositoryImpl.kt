@@ -43,8 +43,9 @@ class AiImageRepositoryImpl @Inject constructor(
 ) : IAiImageRepository {
 
     companion object {
-        /** qwen-vl-max：阿里云百炼平台视觉理解模型 */
-        private const val MODEL_NAME = "qwen-vl-max"
+        /** qwen3.7-plus：阿里云百炼平台视觉理解模型（原 qwen-vl-max 将于 2026-07-13 下线，已切换），
+         *  与打标/搜索兜底/废片清理用同一模型，保证识图/文案生成的识别口径一致 */
+        private const val MODEL_NAME = "qwen3.7-plus"
 
         /**
          * 压缩后的图片最长边上限（像素）

@@ -58,12 +58,17 @@ class AiApiClient @Inject constructor(
         val config = repository.currentConfig
             ?: throw AiNotConfiguredException()
 
-        val authenticatedRequest = chain.request().newBuilder()
+        val original = chain.request()
+        val builder = original.newBuilder()
             .header("Authorization", "Bearer ${config.apiKey}")
-            .header("Content-Type", "application/json")
-            .build()
 
-        chain.proceed(authenticatedRequest)
+        // ⚠️ 仅在请求体没有自带 Content-Type 时才补充默认的 JSON 类型，
+        // 避免误覆盖某些请求（如 multipart/form-data）自带的 boundary 类型。
+        if (original.body?.contentType() == null) {
+            builder.header("Content-Type", "application/json")
+        }
+
+        chain.proceed(builder.build())
     }
 
     // ----------------------------------------------------------------

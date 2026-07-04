@@ -64,7 +64,7 @@ class GlobalCrashHandler(
 
             logFile.writeText(
                 buildString {
-                    appendLine("=== AI Gallery 崩溃日志 ===")
+                    appendLine("=== 忆刻 崩溃日志 ===")
                     appendLine("时间：$timestamp")
                     appendLine("崩溃线程：${thread.name}（id=${thread.id}）")
                     appendLine("============================")

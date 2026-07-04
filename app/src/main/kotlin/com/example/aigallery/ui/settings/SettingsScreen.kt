@@ -399,7 +399,7 @@ private fun DashScopeQuickStartCard() {
             }
 
             Text(
-                text = "使用模型 qwen-vl-max，新用户有免费额度可试用",
+                text = "文本模型 qwen3.7-max，视觉模型 qwen3.7-plus，OCR 模型 qwen3.5-ocr，新用户有免费额度可试用",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )

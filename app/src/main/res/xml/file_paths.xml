@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 路径映射：仅暴露隐藏相册私有目录，最小化授权范围。
+    对应 Java 层 context.getExternalFilesDir(null)/.hidden_photos/
+-->
+<paths>
+    <external-files-path name="hidden_photos" path=".hidden_photos/" />
+</paths>

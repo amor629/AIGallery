@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    AI Gallery 单色图标层（Android 13+ Material You 主题图标使用）
+    忆刻单色图标层（Android 13+ Material You 主题图标使用）
     系统会根据当前壁纸颜色将此图层染色，因此只需提供形状轮廓即可。
 
-    使用 fillType="evenOdd"（偶奇填充规则）制造镂空效果：
-      • 外层路径（相机机身）= 白色填充
-      • 中层圆（镜头外圈 r=12）= 透明镂空（偶奇：第2层 → 无填充）
-      • 内层圆（镜头瞳孔 r=4）= 白色填充（偶奇：第3层 → 有填充）
-    最终效果：相机外形 + 镂空镜头环 + 实心中心点
+    简化的“打开的相册/书本”剪影：
+      • 底部厚块 = 书本封底/书脊
+      • 左右两片梯形 = 打开的书页，中间在书脊处汇合
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -15,16 +13,21 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
+    <!-- ===== 书本封底/书脊（厚底座）===== -->
     <path
         android:fillColor="#FFFFFF"
-        android:fillType="evenOdd"
-        android:pathData="
-            M46,42 L48,36 L60,36 L62,42 L70,42
-            Q78,42 78,50 L78,72
-            Q78,80 70,80 L38,80
-            Q30,80 30,72 L30,50
-            Q30,42 38,42 Z
-            M42,61 A12,12 0 1,0 66,61 A12,12 0 1,0 42,61 Z
-            M50,61 A4,4 0 1,0 58,61 A4,4 0 1,0 50,61 Z" />
+        android:pathData="M26,76 L82,76 L82,86
+                          Q82,90 78,90 L30,90
+                          Q26,90 26,86 Z" />
+
+    <!-- ===== 左侧书页 ===== -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,42 L54,37 L54,80 L27,84 Z" />
+
+    <!-- ===== 右侧书页 ===== -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M78,42 L54,37 L54,80 L81,84 Z" />
 
 </vector>

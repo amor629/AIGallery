@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
@@ -95,7 +96,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.aigallery.ui.hidden.canUseBiometricAuth
+import com.example.aigallery.ui.hidden.showHiddenAlbumAuthPrompt
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -216,17 +220,23 @@ fun GalleryScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToWaste: () -> Unit = {},        // AI 废片清理入口
     onNavigateToSmartAlbums: () -> Unit = {},  // 智能相册入口
-    onNavigateToDetail: (MediaItem) -> Unit = {},  // 点击缩略图进入详情页
+    onNavigateToHiddenAlbum: () -> Unit = {},  // 隐藏相册入口（调用方负责生物识别验证）
+    // 点击缩略图进入详情页：第二个参数是"点击时所在的列表"，用于详情页限定左右滑动范围
+    // （时间轴 / 搜索结果 / 视觉扫描中的结果各不相同，不能统一用全量相册）
+    onNavigateToDetail: (MediaItem, List<MediaItem>) -> Unit = { _, _ -> },
     viewModel: GalleryViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val timelineItems by viewModel.timelineMedia.collectAsStateWithLifecycle()
+    // 时间轴对应的扁平媒体列表（不含月份标题），供普通模式下详情页翻页使用
+    val allMedia by viewModel.allMedia.collectAsStateWithLifecycle()
 
     // ---- 多选模式状态 ----
     val isSelecting by viewModel.isSelecting.collectAsStateWithLifecycle()
     val selectedUris by viewModel.selectedUris.collectAsStateWithLifecycle()
     val deleteRequest by viewModel.deleteRequest.collectAsStateWithLifecycle()
+    val hideDeleteRequest by viewModel.hideDeleteRequest.collectAsStateWithLifecycle()
     // ---- 分类筛选器 ----
     val currentFilter by viewModel.currentFilter.collectAsStateWithLifecycle()
 
@@ -329,6 +339,18 @@ fun GalleryScreen(
             deleteLauncher.launch(
                 IntentSenderRequest.Builder(sender).build()
             )
+        }
+    }
+
+    // ---- 系统删除确认弹窗 Launcher（隐藏流程专用：删除原文件后才真正落库）----
+    val hideLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onHideDeleteResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(hideDeleteRequest) {
+        hideDeleteRequest?.let { sender ->
+            hideLauncher.launch(IntentSenderRequest.Builder(sender).build())
         }
     }
 
@@ -518,7 +540,7 @@ fun GalleryScreen(
                         title = {
                             Column {
                                 Text(
-                                    text = "AI Gallery",
+                                    text = "忆刻",
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -547,6 +569,27 @@ fun GalleryScreen(
                                     Icons.Default.PhotoLibrary,
                                     contentDescription = "智能相册",
                                     tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                            // 隐藏相册入口：先做生物识别/设备锁验证，通过后才导航
+                            IconButton(onClick = {
+                                val activity = context as? FragmentActivity
+                                if (activity == null || !canUseBiometricAuth(activity)) {
+                                    // 无法获取 Activity 或设备未设置任何锁屏方式时直接放行，
+                                    // 避免用户被卡在门外进不去
+                                    onNavigateToHiddenAlbum()
+                                } else {
+                                    showHiddenAlbumAuthPrompt(
+                                        activity = activity,
+                                        onSuccess = onNavigateToHiddenAlbum,
+                                        onError = { /* 用户取消或验证失败，停留在当前页 */ }
+                                    )
+                                }
+                            }) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    contentDescription = "隐藏相册",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             // 搜索按钮（仅在已有内容时可用）
@@ -600,6 +643,31 @@ fun GalleryScreen(
                                 Text(
                                     text = "分享",
                                     style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+
+                        // ---- 隐藏 ----
+                        IconButton(
+                            onClick = viewModel::requestHideSelected,
+                            enabled = selectedUris.isNotEmpty()
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    contentDescription = null,
+                                    tint = if (selectedUris.isNotEmpty())
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                )
+                                Text(
+                                    text = "隐藏",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selectedUris.isNotEmpty())
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                                 )
                             }
                         }
@@ -817,7 +885,7 @@ fun GalleryScreen(
                                                     media       = item,
                                                     isSelecting = false,
                                                     isSelected  = false,
-                                                    onClick     = { onNavigateToDetail(item) },
+                                                    onClick     = { onNavigateToDetail(item, vs.partialResults) },
                                                     onLongClick = {}
                                                 )
                                             }
@@ -848,7 +916,7 @@ fun GalleryScreen(
                                             isSelected  = item.uri in selectedUris,
                                             onClick     = {
                                                 if (isSelecting) viewModel.toggleSelection(item.uri)
-                                                else onNavigateToDetail(item)
+                                                else onNavigateToDetail(item, results)
                                             },
                                             onLongClick = { viewModel.enterSelectionMode(item.uri) }
                                         )
@@ -896,8 +964,8 @@ fun GalleryScreen(
                                     // 多选模式：单击切换选中状态
                                     viewModel.toggleSelection(media.uri)
                                 } else {
-                                    // 普通模式：进入详情页
-                                    onNavigateToDetail(media)
+                                    // 普通模式：进入详情页，翻页范围限定在当前筛选后的时间轴列表
+                                    onNavigateToDetail(media, allMedia)
                                 }
                             },
                             onItemLongClick = { media ->
@@ -1198,9 +1266,9 @@ private fun PermissionRequiredContent(
 
         Text(
             text = if (isPermanentlyDenied)
-                "您已拒绝授权，请前往系统设置手动开启\n以便 AI Gallery 展示本地相册"
+                "您已拒绝授权，请前往系统设置手动开启\n以便忆刻展示本地相册"
             else
-                "AI Gallery 需要读取您的图片和视频\n才能展示本地相册内容",
+                "忆刻需要读取您的图片和视频\n才能展示本地相册内容",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -1233,7 +1301,7 @@ private fun PermissionRequiredContent(
                         text = "1. 点击下方「前往系统设置」\n" +
                                "2. 进入「权限」→「照片和视频」\n" +
                                "3. 选择「允许访问所有照片」\n" +
-                               "4. 返回 AI Gallery 即可使用",
+                               "4. 返回忆刻即可使用",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

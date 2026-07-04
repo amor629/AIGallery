@@ -5,13 +5,13 @@ import com.google.gson.annotations.SerializedName
 /**
  * OpenAI 兼容接口 Chat Completions 请求体
  *
- * 兼容 DashScope 百炼平台 qwen-vl-max 多模态模型。
+ * 兼容 DashScope 百炼平台 qwen3.x 系列多模态模型（如 qwen3.7-plus）。
  * 所有字段名通过 @SerializedName 严格对应 API 规范，确保 Gson 序列化正确。
  *
  * 示例请求结构：
  * ```json
  * {
- *   "model": "qwen-vl-max",
+ *   "model": "qwen3.7-plus",
  *   "messages": [{
  *     "role": "user",
  *     "content": [
